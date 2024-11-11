@@ -198,7 +198,7 @@ def rr_save_result(EXCEL_REPORT_PATH):
         fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
 
     plt.tight_layout()
-    plt.show()
+    #plt.show()
 
     with pd.ExcelWriter(filename, engine='openpyxl', mode='w') as writer:
       # Сохраняем график как изображение
@@ -226,7 +226,7 @@ def rr_save_result(EXCEL_REPORT_PATH):
         fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
 
     plt.tight_layout()
-    plt.show()
+    #plt.show()
 
     with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
       # Сохраняем график как изображение
@@ -343,7 +343,7 @@ def rr_save_result(EXCEL_REPORT_PATH):
         fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
 
     plt.tight_layout()
-    plt.show()
+    #plt.show()
 
     with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
       # Сохраняем график как изображение
