@@ -183,15 +183,19 @@ def rr_save_result(EXCEL_REPORT_PATH):
         ax.legend(title='Цвета кривых')
         ax.grid(True)
 
+    len(list_periods)
+
     # Создаем фигуру и подграфики
     count_graphs = len(list_periods)
-    fig, axs = plt.subplots(nrows=count_graphs//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
+    fig, axs = plt.subplots(nrows=(count_graphs+1)//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
     axs = axs.flatten()  # Преобразуем в одномерный массив для удобного доступа
 
     # Перебираем все периоды и строим графики
     for i, period in enumerate(list_periods):
         plot(df_res, period, axs[i])  # Передаем соответствующий подграфик
 
+    if count_graphs % 2 != 0:
+        fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
 
     plt.tight_layout()
     plt.show()
@@ -210,7 +214,7 @@ def rr_save_result(EXCEL_REPORT_PATH):
 
     # Создаем фигуру и подграфики
     count_graphs = len(list_periods)
-    fig, axs = plt.subplots(nrows=count_graphs//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
+    fig, axs = plt.subplots(nrows=(count_graphs+1)//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
     axs = axs.flatten()  # Преобразуем в одномерный массив для удобного доступа
 
     # Перебираем все периоды и строим графики
@@ -218,6 +222,8 @@ def rr_save_result(EXCEL_REPORT_PATH):
         period += '_|NN|'
         plot(df_res, period, axs[i], postfix='М')  # Передаем соответствующий подграфик
 
+    if count_graphs % 2 != 0:
+        fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
 
     plt.tight_layout()
     plt.show()
@@ -326,13 +332,15 @@ def rr_save_result(EXCEL_REPORT_PATH):
 
     # Создаем фигуру и подграфики
     count_graphs = len(list_periods)
-    fig, axs = plt.subplots(nrows=count_graphs//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
+    fig, axs = plt.subplots(nrows=(count_graphs+1)//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
     axs = axs.flatten()  # Преобразуем в одномерный массив для удобного доступа
 
     # Перебираем все периоды и строим графики
     for i, period in enumerate(list_periods):
         plot2(df_res, period, axs[i], postfix='ММ')  # Передаем соответствующий подграфик
 
+    if count_graphs % 2 != 0:
+        fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
 
     plt.tight_layout()
     plt.show()
