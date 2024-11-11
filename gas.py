@@ -7,12 +7,11 @@ Original file is located at
     https://colab.research.google.com/drive/1FyVPoj3273Ia31C2dOOzuco28xpVM3BL
 """
 
-import pandas as pd
-import seaborn as sns
-import numpy as np
-import matplotlib.pyplot as plt
-
 def gas_result(EXCEL_REPORT_PATH, GAS_REPORT_PATH):
+    import pandas as pd
+    import seaborn as sns
+    import numpy as np
+    import matplotlib.pyplot as plt
     #EXCEL_REPORT_PATH = "Терентьев Виталий Иванович_ДОО_1+30_Терентьев_24_6_2023.rr"
     df1 = pd.read_csv(EXCEL_REPORT_PATH)
     df1.columns = ['Unnamed: 0']
@@ -22,18 +21,20 @@ def gas_result(EXCEL_REPORT_PATH, GAS_REPORT_PATH):
     df_res['ВРЕМЯ'] = df_res['ОВР'].cumsum()
     df_res = df_res.reset_index()
 
-    import re
-    match = re.search(r'([А-ЯЁ][а-яё]+\s[А-ЯЁ][а-яё]+\s[А-ЯЁ][а-яё]+)', EXCEL_REPORT_PATH)
-
-    if match:
-        name = match.group(0)
-    else:
-        full_name = EXCEL_REPORT_PATH.split('.')[0]
+    # import re
+    # match = re.search(r'([А-ЯЁ][а-яё]+\s[А-ЯЁ][а-яё]+\s[А-ЯЁ][а-яё]+)', EXCEL_REPORT_PATH)
+    # if match:
+    #     name = match.group(0)
+    #     name = name.replace('/', '')
+    # else:
+    #     full_name = EXCEL_REPORT_PATH.split('.')[0]
+    #     name = full_name.replace('/', '')
+    name = EXCEL_REPORT_PATH.replace('/', ' ')
 
     #GAS_REPORT_PATH = "20230624 Виталий Терентьев (CPET вдох за вдохом)_20230624111633.xlsx"
     df = pd.read_excel(GAS_REPORT_PATH)
 
-    df['RER'] = df['VCO2'].iloc[2:] / df['VO2'].iloc[2:]
+    df['RER'] = df['RQ']
     df['t'] = df['t'].apply(lambda x: str(x))
     df['VE'] = df['VE/VCO2'].iloc[2:] * df['VCO2'].iloc[2:]
 
