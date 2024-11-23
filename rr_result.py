@@ -18,249 +18,273 @@ from openpyxl.drawing.image import Image
 warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 
 
-def rr_save_result(EXCEL_REPORT_PATH):
+def rr_save_result(duration_of_start, duration_of_predstart, conut_rest_mins):
+    def find_last_name(ext: str) -> str:
+      # Путь к папке с файлами (по умолчанию /content в Colab)
+      directory = "/content"
+    
+      # Найти все файлы с расширением .rr
+      rr_files = [f for f in os.listdir(directory) if f.endswith(ext)]
+    
+      if rr_files:
+          # Найти последний загруженный файл по времени изменения
+          latest_file = max(rr_files, key=lambda f: os.path.getmtime(os.path.join(directory, f)))
+          EXCEL_REPORT_PATH = os.path.join(directory, latest_file)
+    
+          print(f"Последний файл: {EXCEL_REPORT_PATH}")
+      else:
+          print(f"Файлы с расширением {ext} не найдены.")
+      return EXCEL_REPORT_PATH
+    
+    EXCEL_REPORT_PATH = find_last_name("rr")
+    
     df = pd.read_csv(EXCEL_REPORT_PATH)
     df.columns = ['Unnamed: 0']
-
+    
     df_res = pd.DataFrame()
     df_res['ОВР'] = df['Unnamed: 0'].dropna().reset_index(drop=True)
     df_res['ВРЕМЯ'] = df_res['ОВР'].cumsum()
     df_res = df_res.reset_index()
-
+    
     import re
-
+    
     match = re.search(r'([А-ЯЁ][а-яё]+\s[А-ЯЁ][а-яё]+\s[А-ЯЁ][а-яё]+)', EXCEL_REPORT_PATH)
-
+    
     if match:
         full_name = match.group(0)
     else:
         full_name = EXCEL_REPORT_PATH.split('.')[0]
-
+    
     filename = full_name + '_result_rr.xlsx'
-
+    
     """# Разбиваем временной ряд на следюущие периоды:
     - предстарт, старт
-    - 4 нагрузочные минуты
-    - 4 восстановительные минуты
+    - нагрузочные минуты
+    - восстановительные минуты
     """
-
+    
     len_arr = len(df_res['ОВР'])
     arr_name = [""] * len_arr
     arr_name[0] = EXCEL_REPORT_PATH.split('/')[-1]
     df_res["ФИО"] = arr_name
-
+    
     arr_periods = [""] * len_arr
-
+    
     # ВОССТАНОВЛЕНИЕ
+    #conut_rest_mins = 6 # Количество минут восстановления
+    
     t30 = 30000
     t60 = t30 * 2
-    t360 = t60 * 6
-
+    t_start_of_rest = t60 * conut_rest_mins
+    
     list_v = []
-
+    
     # Определение последней временной метки и начальной временной метки
-    end_time = df_res['ВРЕМЯ'].iloc[-1]  # Последняя временная метка в данных
-    start_time_v = end_time - t360
-
+    duration_time = df_res['ВРЕМЯ'].iloc[-1]  # Последняя временная метка в данных (накопленного итога)
+    start_time_v = duration_time - t_start_of_rest
+    
     # Разбиение на минуты
-    for i in range(6):  # Для каждой минуты в диапазоне
-
+    for i in range(conut_rest_mins):  # Для каждой минуты восстановления
+    
         list_v.append(f"{i+1}В")
         minute_start = start_time_v + i * t60
         minute_end = start_time_v + (i + 1) * t60
-
+    
         temp = df_res.loc[(df_res['ВРЕМЯ'] >= minute_start) & (df_res['ВРЕМЯ'] < minute_end), 'ОВР']
         df_res[f"{i+1}В"] = temp
         arr_periods[temp.index[0]] = f"{i+1}В"
-
+    
     # НАГРУЗКА
+    # duration_of_start = t30 # длительность старта (пример: t30, t60, 30000)
+    # duration_of_predstart = duration_of_start # длительность предстарта
+    
     list_n = []
-    start_time = df_res['ВРЕМЯ'].iloc[0] + t60 # Первая временная метка в данных после СТ и ПС
+    start_time = df_res['ВРЕМЯ'].iloc[0] + duration_of_start + duration_of_predstart # Первая временная метка в данных после СТ и ПС
     end_time = start_time_v
-
-    temp1 = df_res.loc[df_res['ВРЕМЯ'] <= t30, 'ОВР']
+    
+    temp1 = df_res.loc[df_res['ВРЕМЯ'] <= duration_of_start, 'ОВР']
     df_res["ПС"] = temp1
     arr_periods[temp1.index[0]] = "ПС"
-    temp2 = df_res.loc[(df_res['ВРЕМЯ'] > t30) & (df_res['ВРЕМЯ'] <= t60), 'ОВР']
+    temp2 = df_res.loc[(df_res['ВРЕМЯ'] > duration_of_start) & (df_res['ВРЕМЯ'] <= duration_of_start + duration_of_predstart), 'ОВР']
     df_res["СТ"] = temp2
     arr_periods[temp2.index[0]] = "СТ"
-
+    
     # Разбиение на минуты
     for i in range(10):  # Для каждой минуты в диапазоне
         minute_start = start_time + i * t60
         minute_end = minute_start + t60
-
+    
         list_n.append(f"{i+1}Н")
-
+    
         if minute_end >= end_time:
           minute_end = end_time
-
+    
           temp = df_res.loc[(df_res['ВРЕМЯ'] >= minute_start) & (df_res['ВРЕМЯ'] < minute_end), 'ОВР']
           df_res[f"{i+1}Н"] = temp
           arr_periods[temp.index[0]] = f"{i+1}Н"
           break
-
-
+    
+    
         temp = df_res.loc[(df_res['ВРЕМЯ'] >= minute_start) & (df_res['ВРЕМЯ'] < minute_end), 'ОВР']
         df_res[f"{i+1}Н"] = temp
         arr_periods[temp.index[0]] = f"{i+1}Н"
-
+    
     df_res["ПЕРИОДЫ"] = arr_periods
-
+    
     list_abs_nn = []
     list_nn = []
     list_m = []
-
+    
     list_periods = [period for period in arr_periods if len(period) > 1]
     for period in list_periods:
         y = df_res[period].dropna()
         X = df_res[['index']].loc[:len(y)-1]
-
+    
         model = LinearRegression()
         model.fit(X, y)
-
+    
         slope = model.coef_[0]  # наклон
-
+    
         intercept = model.intercept_  # отрезок
-
+        #intercept = y.iloc[0]
+    
+    
         df_res[period+'_наклон'] = slope
-
+    
         df_res[period+'_отрезок'] = intercept
-
+    
         start_ind = y.index[0]
         end_ind = y.index[-1]
         df_res.loc[start_ind:end_ind, period+'_М'] = model.predict(X)
-
+    
         df_res[period+'_NN'] = df_res[period].diff(periods=-1)
         df_res[period+'_|NN|'] = df_res[period+'_NN'].abs()
-
+    
         list_m.append(period+'_М')
         list_nn.append(period+'_NN')
         list_abs_nn.append(period+'_|NN|')
-
+    
     list_nn_m = []
-
+    
     list_periods = [period for period in arr_periods if len(period) > 1]
     for period in list_periods:
         period = period + "_|NN|"
         y = df_res[period].dropna()
         X = df_res[['index']].loc[:len(y)-1]
-
+    
         model = LinearRegression()
         model.fit(X, y)
-
+    
         slope = model.coef_[0]  # наклон
-
+    
         intercept = model.intercept_  # отрезок
-
+    
         df_res[period+'_наклон'] = slope
-
+    
         df_res[period+'_отрезок'] = intercept
-
+    
         start_ind = y.index[0]
         end_ind = y.index[-1]
         df_res.loc[start_ind:end_ind, period+'_М'] = model.predict(X)
-
+    
         list_nn_m.append(period+'_М')
-
+    
     """# Графики нативной и модельной кривых по периодам"""
-
+    
     def plot(df_res, name, ax, postfix='М'):
         groupby_list = list(range(1, len(df_res[name].dropna()) + 1))
-
+    
         sns.set(style="whitegrid")
-
+    
         sns.lineplot(x=groupby_list, y=df_res[name].dropna(), label=name, marker='o', color='blue', ax=ax)
-
-
+    
+    
         groupby_list = list(range(1, len(df_res[f'{name}_{postfix}'].dropna()) + 1))
         sns.lineplot(x=groupby_list, y=df_res[f'{name}_{postfix}'].dropna(), label=f'{name}_{postfix}', marker='o', color='orange', ax=ax)
-
+    
         ax.set_title(f'Нативная и модельная кривая по {name}')
         ax.set_xlabel('Индекс')
         ax.set_ylabel(name)
         ax.tick_params(axis='x', rotation=45)
         ax.legend(title='Цвета кривых')
         ax.grid(True)
-
-    len(list_periods)
-
+    
     # Создаем фигуру и подграфики
     count_graphs = len(list_periods)
     fig, axs = plt.subplots(nrows=(count_graphs+1)//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
     axs = axs.flatten()  # Преобразуем в одномерный массив для удобного доступа
-
+    
     # Перебираем все периоды и строим графики
     for i, period in enumerate(list_periods):
         plot(df_res, period, axs[i])  # Передаем соответствующий подграфик
-
+    
     if count_graphs % 2 != 0:
         fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
-
+    
     plt.tight_layout()
-    #plt.show()
-
+    plt.show()
+    
     with pd.ExcelWriter(filename, engine='openpyxl', mode='w') as writer:
       # Сохраняем график как изображение
       img_path = f'./data/graph_{0}.png'
       axs[0].figure.savefig(img_path)
-
+    
       # Вставляем изображение в Excel
       worksheet = writer.book.create_sheet(f'Модели по периодам')
       img = Image(img_path)
       worksheet.add_image(img, 'A1')
-
+    
     plt.close(fig)
-
+    
     # Создаем фигуру и подграфики
     count_graphs = len(list_periods)
     fig, axs = plt.subplots(nrows=(count_graphs+1)//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
     axs = axs.flatten()  # Преобразуем в одномерный массив для удобного доступа
-
+    
     # Перебираем все периоды и строим графики
     for i, period in enumerate(list_periods):
         period += '_|NN|'
         plot(df_res, period, axs[i], postfix='М')  # Передаем соответствующий подграфик
-
+    
     if count_graphs % 2 != 0:
         fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
-
+    
     plt.tight_layout()
-    #plt.show()
-
+    plt.show()
+    
     with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
       # Сохраняем график как изображение
       img_path = f'./data/graph_{0}.png'
       axs[0].figure.savefig(img_path)
-
+    
       # Вставляем изображение в Excel
       worksheet = writer.book.create_sheet(f'Модели по периодам (|NN|)')
       img = Image(img_path)
       worksheet.add_image(img, 'A1')
-
+    
     plt.close(fig)
-
+    
     """# Графики нативной и модельной кривых после удаления выбросов"""
-
+    
     from scipy.ndimage import gaussian_filter1d
-
+    
     def replace_outliers_with_neighbors(data, threshold=1):
         """
         Заменяет выбросы на среднее значение соседей.
-
+    
         :param data: Входные данные (список или массив).
         :param threshold: Порог для определения выбросов.
         :return: Массив с замененными выбросами.
         """
         mean = np.mean(data)
         std_dev = np.std(data)
-
+    
         # Создаем маску для выбросов
         outlier_mask = np.abs(data - mean) > threshold * std_dev
-
+    
         # Копируем исходные данные
         cleaned_data = data.copy()
-
+    
         # Заменяем выбросы на среднее значение соседей
         for i in cleaned_data.index:
             if outlier_mask[i]:
@@ -270,185 +294,187 @@ def rr_save_result(EXCEL_REPORT_PATH):
                     neighbors.append(cleaned_data[i - 1])
                 if i < cleaned_data.index[-1]:
                     neighbors.append(cleaned_data[i + 1])
-
+    
                 # Заменяем на среднее значение соседей, если они существуют
                 if neighbors:
                     cleaned_data[i] = np.mean(neighbors)
-
+    
         return cleaned_data
-
-
+    
+    
     def gaussian_smoothing(data, sigma):
         """
         Применяет гауссовское сглаживание к данным с сохранением длины.
-
+    
         :param data: Входные данные (список или массив).
         :param sigma: Стандартное отклонение для гауссовского фильтра.
         :return: Сглаженные данные той же длины.
         """
         return gaussian_filter1d(data, sigma=sigma, mode='nearest')
-
+    
     list_periods = [period for period in arr_periods if len(period) > 1]
     for period in list_periods:
-
+    
         series = df_res[period].copy().dropna()
-
+    
         data = replace_outliers_with_neighbors(series.astype(float))
         arr = gaussian_smoothing(data, sigma=5)
-
+    
         y = arr
-
+    
         X = df_res[['index']].loc[:len(y)-1]
-
+    
         model = LinearRegression()
         model.fit(X, y)
-
+    
         slope = model.coef_[0]  # наклон
-
+    
         intercept = model.intercept_  # отрезок
-
+    
         y_ind = df_res[period].dropna()
         start_ind = y_ind.index[0]
         end_ind = y_ind.index[-1]
         df_res.loc[start_ind:end_ind, period+'_ММ'] = model.predict(X)
         df_res.loc[start_ind:end_ind, period+'_ga'] = y
-
+    
     def plot2(df_res, name, ax, postfix='ММ'):
         postfix2 = 'ga'
         groupby_list = list(range(1, len(df_res[f'{name}_{postfix2}'].dropna()) + 1))
-
+    
         sns.set(style="whitegrid")
-
+    
         sns.lineplot(x=groupby_list, y=df_res[f'{name}_{postfix2}'].dropna(), label=f'{name}_{postfix2}', marker='o', color='blue', ax=ax)
-
+    
         sns.lineplot(x=groupby_list, y=df_res[f'{name}_{postfix}'].dropna(), label=f'{name}_{postfix}', marker='o', color='orange', ax=ax)
-
+    
         ax.set_title(f'Нативная и модельная кривая по {name}')
         ax.set_xlabel('Индекс')
         ax.set_ylabel(name)
         ax.tick_params(axis='x', rotation=45)
         ax.legend(title='Цвета кривых')
         ax.grid(True)
-
+    
     # Создаем фигуру и подграфики
     count_graphs = len(list_periods)
     fig, axs = plt.subplots(nrows=(count_graphs+1)//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
     axs = axs.flatten()  # Преобразуем в одномерный массив для удобного доступа
-
+    
     # Перебираем все периоды и строим графики
     for i, period in enumerate(list_periods):
         plot2(df_res, period, axs[i], postfix='ММ')  # Передаем соответствующий подграфик
-
+    
     if count_graphs % 2 != 0:
         fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
-
+    
     plt.tight_layout()
-    #plt.show()
-
+    plt.show()
+    
     with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
       # Сохраняем график как изображение
       img_path = f'./data/graph_{0}.png'
       axs[0].figure.savefig(img_path)
-
+    
       # Вставляем изображение в Excel
       worksheet = writer.book.create_sheet(f'Модели по периодам (ga)')
       img = Image(img_path)
       worksheet.add_image(img, 'A1')
-
+    
     plt.close(fig)
-
+    
     """# pNN, %"""
-
+    
     abs_cols = [col for col in df_res.columns if ('|NN|' in col) and ('|NN|_' not in col)]
     results = pd.DataFrame()
     for duration in range(2, 52, 2):
         proportions = (100 * df_res[abs_cols].ge(duration).sum() / df_res[abs_cols].count()).round(2)
         results[f">={duration}"] = proportions
-
+    
     # Добавляем дополнительную строку с названиями
-
+    
     results.index = [ind[:2]+"_pNN, %" for ind in results.index]
     column_names = results.columns.tolist()
     new_row = pd.DataFrame([column_names], columns=results.columns)
     results = pd.concat([new_row, results], ignore_index=False)
-
+    
     list_pnn = list(results.index[1:])
-
+    
     """# Собираем результат в эксель-таблицу"""
-
+    
     ## Добавляем коэффициенты регрессии
-
+    
     cols_regression = [col for col in df_res.columns if 'наклон' in col or 'отрезок' in col]
     data = df_res[cols_regression].iloc[0]
-
+    
     # Создаем словарь для хранения сгруппированных данных
     grouped_data = {}
-
+    
     for key, value in data.items():
-        group_key = key[:2]  # Первые две буквы ключа
-
+        #group_key = key[:2]  # Первые две буквы ключа
+        group_key = "_".join(key.split("_")[:-1])
+    
         if group_key not in grouped_data:
             grouped_data[group_key] = {'наклон': None, 'отрезок': None}
-
+    
         if 'наклон' in key:
             grouped_data[group_key]['наклон'] = value
         elif 'отрезок' in key:
             grouped_data[group_key]['отрезок'] = value
-
+    
     # Создаем новый DataFrame из сгруппированных данных
     res_df = pd.DataFrame.from_dict(grouped_data, orient='index')
-
+    
     column_names = res_df.columns.tolist()
     new_row = pd.DataFrame([column_names], columns=res_df.columns)
     res_df = pd.concat([new_row, res_df], ignore_index=False)
     res_df.index = [str(ind)+"_коэф" for ind in res_df.index]
-
+    
     ## Добавляем pNN, %
     list_pnnp = []
     for col in results.T.columns:
         df_res[col] = list(results.T[col].values) + [np.nan] * (len(df_res["ОВР"]) - len(results.T[col].values))
         list_pnnp.append(col)
-
+    
     ## Добавляем коэффициенты регрессии
     list_reg = []
     for col in res_df.T.columns:
         df_res[col] = list(res_df.T[col].values) + [np.nan] * (len(df_res["ОВР"]) - len(res_df.T[col].values))
         list_reg.append(col)
-
+    
     list1 = ['ФИО', 'index', 'ПЕРИОДЫ', 'ОВР', 'ВРЕМЯ']
     list2 = ['ПС', 'СТ']
     columns = list1 + list2 + list_n + list_v + list_m + list_nn + list_abs_nn + list_pnnp + list_reg
     df_res = df_res[columns]
-
+    
     df_t = df_res.T
     df_t = df_t.apply(lambda x: pd.Series(x.dropna().values.tolist() + [np.nan] * x.isna().sum()), axis=1)
-
-    indices_to_add_empty_rows = [list1[-1], list2[-1], list_n[-1], list_v[-1], list_m[-1], list_nn[-1], list_abs_nn[-1], list_pnnp[-1], list_reg[-1]]
-
+    
+    indices = [i - 1 for i, element in enumerate(list_reg) if element.startswith('ПС')][1:]
+    
+    indices_to_add_empty_rows = [list1[-1], list2[-1], list_n[-1], list_v[-1], list_m[-1], list_nn[-1], list_abs_nn[-1], list_pnnp[-1], list_reg[indices[0]], list_reg[-1]]
+    
     # Создаем новый DataFrame для хранения результата
     new_rows = []
-
+    
     for idx in df_t.index:
         # Добавляем текущую строку в новый список
         new_rows.append(df_t.loc[idx])
-
+    
         # Если индекс в списке, добавляем две пустые строки
         if idx in indices_to_add_empty_rows:
             new_rows.append(pd.Series(name=''))  # Первая пустая строка
             new_rows.append(pd.Series(name=''))  # Вторая пустая строка
-
+    
     # Создаем новый DataFrame из списка
     new_df = pd.DataFrame(new_rows)
-
+    
     from openpyxl import load_workbook
-
+    
     book = load_workbook(filename)
     sheet_name = 'Статистика'
-
+    
     with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
         new_df.to_excel(writer, sheet_name=sheet_name, index=True)
-
+    
     from google.colab import files
-
+    
     files.download(filename)
-
