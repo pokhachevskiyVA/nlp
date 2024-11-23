@@ -13,6 +13,11 @@ import os
 import matplotlib.pyplot as plt
 
 def gas_result():
+    import pandas as pd
+    import seaborn as sns
+    import numpy as np
+    import os
+    import matplotlib.pyplot as plt
 
     def find_last_name(ext: str) -> str:
       # Путь к папке с файлами (по умолчанию /content в Colab)
