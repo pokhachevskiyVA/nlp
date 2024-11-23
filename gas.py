@@ -20,9 +20,7 @@ def global_imports(modulename,shortname = None, asfunction = False):
     else:        
         globals()[shortname] = eval(modulename + "." + shortname)
 
-print(__name__)
-
-if __name__=='__main__':
+if __name__=='__gas__':
     global_imports("pandas", "pd")
     global_imports("seaborn", "sns")
     global_imports("numpy", "np")
