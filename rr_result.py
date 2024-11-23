@@ -25,7 +25,7 @@ warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 def make(conut_rest_mins, duration_of_start, duration_of_predstart):
     def find_last_name(ext: str) -> str:
       # Путь к папке с файлами (по умолчанию /content в Colab)
-      directory = "/content"
+      directory = "."
 
       # Найти все файлы с расширением .rr
       rr_files = [f for f in os.listdir(directory) if f.endswith(ext)]
@@ -52,14 +52,14 @@ def make(conut_rest_mins, duration_of_start, duration_of_predstart):
 
 
 
-    match = re.search(r'([А-ЯЁ][а-яё]+\s[А-ЯЁ][а-яё]+\s[А-ЯЁ][а-яё]+)', EXCEL_REPORT_PATH)
+    # match = re.search(r'([А-ЯЁ][а-яё]+\s[А-ЯЁ][а-яё]+\s[А-ЯЁ][а-яё]+)', EXCEL_REPORT_PATH)
 
-    if match:
-        full_name = match.group(0)
-    else:
-        full_name = EXCEL_REPORT_PATH.split('.')[0]
+    # if match:
+    #     full_name = match.group(0)
+    # else:
+    #     full_name = EXCEL_REPORT_PATH.split('.')[1]
 
-    filename = full_name + '_result_rr.xlsx'
+    filename = 'data/' + EXCEL_REPORT_PATH + '_result_rr.xlsx'
 
     """# Разбиваем временной ряд на следюущие периоды:
     - предстарт, старт
@@ -226,7 +226,7 @@ def make(conut_rest_mins, duration_of_start, duration_of_predstart):
         fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
 
     plt.tight_layout()
-    plt.show()
+    # plt.show()
 
     with pd.ExcelWriter(filename, engine='openpyxl', mode='w') as writer:
       # Сохраняем график как изображение
@@ -254,7 +254,7 @@ def make(conut_rest_mins, duration_of_start, duration_of_predstart):
         fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
 
     plt.tight_layout()
-    plt.show()
+    # plt.show()
 
     with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
       # Сохраняем график как изображение
@@ -369,7 +369,7 @@ def make(conut_rest_mins, duration_of_start, duration_of_predstart):
         fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
 
     plt.tight_layout()
-    plt.show()
+    # plt.show()
 
     with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
       # Сохраняем график как изображение
