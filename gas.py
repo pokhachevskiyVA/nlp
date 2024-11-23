@@ -20,7 +20,7 @@ from google.colab import files
 def make():
     def find_last_name(ext: str) -> str:
       # Путь к папке с файлами (по умолчанию /content в Colab)
-      directory = "/content"
+      directory = "."
 
       # Найти все файлы с расширением .rr
       rr_files = [f for f in os.listdir(directory) if f.endswith(ext)]
@@ -216,7 +216,7 @@ def make():
 
 
     # Отображаем график
-    fig.show()
+    # fig.show()
 
     html_path = f"gas_{name}.html"
     fig.write_html(html_path)
@@ -284,12 +284,12 @@ def make():
     rr = df['RR'][rcp_index]
     time = df['t'][rcp_index]
 
-    if rcp_index is not None:
-        print(f"Временная метка точки респираторной компенсации в DataFrame: {time}, RR-интервал: {rr}")
-    else:
-        print("Точка респираторной компенсации не найдена.")
+    # if rcp_index is not None:
+    #     print(f"Временная метка точки респираторной компенсации в DataFrame: {time}, RR-интервал: {rr}")
+    # else:
+    #     print("Точка респираторной компенсации не найдена.")
 
-    """# Прогоняем алгоритм на всех данных"""
+    # """# Прогоняем алгоритм на всех данных"""
 
     # #!unzip RR.zip -d ./rr
     # # Путь к папке
