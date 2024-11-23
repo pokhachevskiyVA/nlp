@@ -25,7 +25,7 @@ if __name__=='__main__':
     global_imports("seaborn", "sns")
     global_imports("numpy", "np")
     global_imports("os")
-    global_imports("matplotlib.pyplot", "plt")
+    # global_imports("matplotlib.pyplot", "plt")
     gas_result()
 
 def gas_result():
