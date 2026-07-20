@@ -308,11 +308,36 @@ def detect_points(df, times, rec_start, return_details=False):
         idx = np.where(m)[0]
         return int(idx[np.argmin(np.asarray(y)[idx])])
 
-    # --- Точка 3 (RCP): минимум вентиляторного эквивалента VE/VCO2,      ---
-    #     после которого начинается устойчивый рост (классический VT2).
+    def rise_onset(y, lo_t, hi_t):
+        """Начало устойчивого терминального подъёма кривой (конец «корыта»).
+
+        Берём минимум в окне; ищем ПОСЛЕДНИЙ момент, когда кривая ещё в
+        полосе около минимума, но дальше уверенно растёт к концу. Это
+        надёжнее argmin: у плоского «корыта» argmin хватает его начало, а
+        нам нужен конец — точка, с которой начинается рост (VT2/RCP).
+        """
+        m = (te >= lo_t) & (te <= hi_t)
+        if m.sum() < 4:
+            return None
+        idx = np.where(m)[0]
+        yy = np.asarray(y)[idx]
+        rng = float(np.nanmax(y) - np.nanmin(y)) + 1e-9
+        band = 0.12 * rng
+        vmin = float(np.nanmin(yy))
+        yend = float(np.nanmean(yy[-3:]))
+        cand = None
+        for k in range(len(idx)):
+            if yy[k] <= vmin + band and yend > yy[k] + 0.5 * band:
+                cand = int(idx[k])          # последний «донный» индекс перед ростом
+        if cand is None:
+            cand = int(idx[int(np.argmin(yy))])
+        return cand
+
+    # --- Точка 3 (RCP): начало устойчивого роста вентиляторного        ---
+    #     эквивалента VE/VCO2 (классический VT2).
     t3 = None
     try:
-        i3 = argmin_in(C['VE/VCO2'], te[0] + 0.35 * dur, te[0] + 0.95 * dur)
+        i3 = rise_onset(C['VE/VCO2'], te[0] + 0.30 * dur, te[0] + 0.97 * dur)
         if i3 is not None:
             t3 = te[i3]
             s = support_at(t3, ['VE/VCO2', 'VE', 'RER'], +1)
@@ -343,8 +368,8 @@ def detect_points(df, times, rec_start, return_details=False):
     # --- Точка 2 (ацидотический pH-порог): кластеризация изломов ВВЕРХ ---
     #     кривых VCO2 и VE строго между точкой 1 и RCP (самое сложное место,
     #     здесь идея кластеризации по кривым работает лучше всего).
-    lo2 = (t1 + tol) if t1 is not None else te[0] + 0.3 * dur
-    hi2 = (t3 - tol) if t3 is not None else te[0] + 0.85 * dur
+    lo2 = (t1 + 0.5 * tol) if t1 is not None else te[0] + 0.3 * dur
+    hi2 = (t3 - 0.3 * tol) if t3 is not None else te[0] + 0.85 * dur
     cands = []
     for nm in ['VCO2', 'VE', 'RER']:
         if C.get(nm) is None:
