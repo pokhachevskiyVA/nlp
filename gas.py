@@ -66,6 +66,64 @@ def _smooth_series(series, sigma=5):
 
 
 # ------------------------------------------------------------------ #
+#  Авто-расчёт начала восстановления по RR-интервалам (задача 1, авто)
+# ------------------------------------------------------------------ #
+def _clean_rr(r, win=11):
+    """Чистка RR от артефактов (отходящие электроды, раскачивание и т.п.).
+
+    1) физиологические границы [250, 2000] мс;
+    2) удаление выбросов по локальному MAD относительно скользящей медианы;
+    3) база — скользящая медиана (гасит плотные пачки артефактов).
+    """
+    s = pd.Series(np.asarray(r, dtype=float))
+    s[(s < 250) | (s > 2000)] = np.nan
+    s = s.interpolate(limit_direction='both')
+    med = s.rolling(win, center=True, min_periods=1).median()
+    resid = (s - med).abs()
+    mad = resid.rolling(win, center=True, min_periods=1).median() * 1.4826 + 1e-9
+    s[resid > 4 * mad] = np.nan
+    s = s.interpolate(limit_direction='both')
+    return s.rolling(win, center=True, min_periods=1).median().values
+
+
+def detect_recovery_start_rr(rr_intervals, sigma=6):
+    """Начало восстановления по RR: момент, когда после нагрузки RR-интервалы
+    начинают устойчиво расти (конец «дна» кривой RR).
+
+    Во время нагрузки ЧСС растёт -> RR падает; на восстановлении RR резко
+    увеличивается. Ищем начало этого устойчивого роста (на сглаженной и
+    очищенной от артефактов кривой) — это и есть граница нагрузка/отдых.
+
+    Возвращает время начала восстановления в секундах (по шкале RR,
+    совпадающей с осью газового анализа) или None.
+    """
+    r = np.asarray(rr_intervals, dtype=float)
+    r = r[np.isfinite(r)]
+    if len(r) < 20:
+        return None
+    rc = _clean_rr(r)
+    t = np.cumsum(rc) / 1000.0                      # секунды от начала теста
+    rs = gaussian_smoothing(rc, sigma=sigma)
+    T = t[-1]
+    idx = np.where((t >= 0.30 * T) & (t <= 0.99 * T))[0]  # восстановление — поздно
+    if len(idx) < 8:
+        return None
+    seg = rs[idx]
+    vmin = float(np.min(seg))
+    rng = float(np.max(seg) - vmin) + 1e-9
+    band = 0.15 * rng
+    tail = float(np.mean(rs[idx[-3:]]))
+    cand = None
+    for k in range(len(idx)):
+        # последняя «донная» точка перед устойчивым ростом к концу записи
+        if seg[k] <= vmin + band and tail > seg[k] + 2 * band:
+            cand = int(idx[k])
+    if cand is None:
+        cand = int(idx[int(np.argmin(seg))])
+    return float(t[cand])
+
+
+# ------------------------------------------------------------------ #
 #  Авто-поиск точек 1-4 (черновик, задача 4)
 # ------------------------------------------------------------------ #
 def _piecewise_breakpoint(t, y, lo_frac=0.1, hi_frac=0.9):
@@ -539,7 +597,7 @@ def find_last_name(ext, directory='.'):
 # ------------------------------------------------------------------ #
 def make(rr_path=None, gas_path=None, recovery_minutes=None,
          directory='.', out_dir='.', download=True, auto_detect=True,
-         show_candidates=False):
+         show_candidates=False, recovery_auto=True):
     """Строит HTML с графиками газового анализа.
 
     Параметры (все необязательные — по умолчанию поведение как в Colab):
@@ -553,6 +611,9 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
       show_candidates     — дополнительно рисовать серые линии-кандидаты
                             (изломы, подтверждённые >=2 кривыми) — «лишние»
                             точки в помощь учёному.
+      recovery_auto       — если минуты не заданы явно, определять начало
+                            восстановления автоматически по RR-интервалам
+                            (по умолчанию True; без ввода с клавиатуры).
 
     Возвращает dict: {'html_path':..., 'recovery_start':..., 'points':...}.
     """
@@ -606,38 +667,45 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     # ================================================================ #
     #  ЗАДАЧА 1: минуты восстановления с клавиатуры
     # ================================================================ #
-    # Подсказка: если в CPET-файле есть столбец «Фаза» с меткой RECOVERY,
-    # оцениваем длительность восстановления и предлагаем как значение
-    # по умолчанию (учёный может подтвердить Enter или ввести своё).
-    suggested = None
+    # Метка прибора (Фаза=RECOVERY) — только для сверки/запаса.
+    faza_min = None
     if 'Фаза' in df.columns:
         try:
             ph = df['Фаза'].loc[2:].astype(str)
             rec_mask = ph.str.upper().str.contains('RECOVERY')
             if rec_mask.any():
-                rec_times = times_sec[rec_mask.values]
-                suggested = round((times_sec.max() - rec_times.min()) / 60.0, 1)
+                faza_min = round((times_sec.max()
+                                  - times_sec[rec_mask.values].min()) / 60.0, 1)
         except Exception:
-            suggested = None
+            faza_min = None
 
+    # ГЛАВНОЕ: если минуты не заданы вручную — считаем АВТОМАТИЧЕСКИ по RR
+    # (момент устойчивого роста RR-интервалов после нагрузки). Без клавиатуры.
+    if recovery_minutes is None and recovery_auto:
+        try:
+            rr_onset = detect_recovery_start_rr(df_res['ОВР'].values)
+        except Exception:
+            rr_onset = None
+        if rr_onset is not None:
+            recovery_minutes = round((times_sec.max() - rr_onset) / 60.0, 1)
+            msg = (f'Авто (по RR): начало восстановления ≈ {rr_onset:.0f} с '
+                   f'-> {recovery_minutes} мин восстановления')
+            if faza_min is not None:
+                msg += f'  (метка прибора Фаза: {faza_min} мин)'
+            print(msg)
+
+    # Запасной путь: метка прибора, затем ручной ввод (если авто не сработало)
     if recovery_minutes is None:
-        prompt = 'Введите количество минут восстановления'
-        if suggested is not None:
-            prompt += f' (Enter = предложенное {suggested}): '
+        if faza_min is not None:
+            recovery_minutes = faza_min
+            print(f'Авто по RR не удалось; беру метку прибора: {faza_min} мин')
         else:
-            prompt += ': '
-        while True:
             try:
-                raw = input(prompt).strip().replace(',', '.')
-                if raw == '' and suggested is not None:
-                    recovery_minutes = suggested
-                else:
-                    recovery_minutes = float(raw)
-                break
+                recovery_minutes = float(
+                    input('Введите количество минут восстановления: ')
+                    .strip().replace(',', '.'))
             except (ValueError, EOFError):
-                print('Не удалось прочитать число, попробуйте ещё раз.')
-                recovery_minutes = suggested if suggested is not None else 0
-                break
+                recovery_minutes = 0
 
     # ================================================================ #
     #  ЗАДАЧА 2: время начала восстановления (отсчёт от конца ряда)
