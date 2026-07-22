@@ -186,6 +186,140 @@ def detect_recovery_start_rr(rr_intervals, sigma=6, hold_s=15.0):
     return float(t[onset])
 
 
+def _dfa_alpha1(rr, nmin=4, nmax=16):
+    """DFA α1 (короткая шкала) на отрезке RR."""
+    rr = np.asarray(rr, dtype=float)
+    x = np.cumsum(rr - rr.mean())
+    N = len(x)
+    ns = list(range(nmin, nmax + 1))
+    F = []
+    for n in ns:
+        k = N // n
+        if k < 2:
+            F.append(np.nan)
+            continue
+        r = 0.0
+        for j in range(k):
+            s = x[j * n:(j + 1) * n]
+            tt = np.arange(n)
+            r += np.sum((s - np.polyval(np.polyfit(tt, s, 1), tt)) ** 2)
+        F.append(np.sqrt(r / (k * n)))
+    ns, F = np.array(ns), np.array(F)
+    ok = np.isfinite(F) & (F > 0)
+    return np.polyfit(np.log(ns[ok]), np.log(F[ok]), 1)[0] if ok.sum() >= 3 else np.nan
+
+
+def rr_candidate_markers(t, rr_clean, rr_smoothed, rec_start,
+                         win=110, step=10):
+    """Кандидатные RR-маркеры порогов (для визуальной оценки учёными).
+
+    Возвращает dict времён (сек) — часть может быть None:
+      alpha1_075 — скользящий DFA α1 пересёк 0.75 (кандидат в аэробный порог VT1);
+      alpha1_05  — DFA α1 пересёк 0.5 (кандидат в RCP/VT2);
+      rmssd_floor — RMSSD упал ниже 15% исходного («исчезновение вариабельности»);
+      trend_bp1/trend_bp2 — 1-й и 2-й переломы тренда сглаженной RR.
+    ВНИМАНИЕ: по нашей проверке эти маркеры индивидуально совпадают с газовыми
+    точками 1-3 плохо — это ориентиры, а не точный ответ.
+    """
+    t = np.asarray(t, float)
+    rc = np.asarray(rr_clean, float)
+    ys = np.asarray(rr_smoothed, float)
+    res = {k: None for k in
+           ('alpha1_075', 'alpha1_05', 'rmssd_floor', 'trend_bp1', 'trend_bp2')}
+    load = t < rec_start
+    if load.sum() < 20:
+        return res
+    tl = t[load]
+    # --- DFA α1 скользящим окном ---
+    try:
+        ta, aa = [], []
+        rcl = rc[load]
+        for i in range(0, len(rcl) - win, step):
+            aa.append(_dfa_alpha1(rcl[i:i + win]))
+            ta.append(tl[i + win // 2])
+        ta, aa = np.array(ta), np.array(aa)
+
+        def cross(lvl):
+            for i in range(1, len(aa)):
+                if np.isfinite(aa[i - 1]) and np.isfinite(aa[i]) and aa[i - 1] >= lvl >= aa[i]:
+                    f = (aa[i - 1] - lvl) / (aa[i - 1] - aa[i] + 1e-9)
+                    return float(ta[i - 1] + f * (ta[i] - ta[i - 1]))
+            return None
+        res['alpha1_075'] = cross(0.75)
+        res['alpha1_05'] = cross(0.5)
+    except Exception:
+        pass
+    # --- RMSSD floor (исчезновение вариабельности) ---
+    try:
+        rms = pd.Series(np.abs(np.diff(rc))).rolling(20, min_periods=5).mean().values
+        tr = t[1:]
+        rl = tr < rec_start
+        base = np.nanmax(rms[rl][:max(3, rl.sum() // 3)])
+        for i in range(len(rms)):
+            if rl[i] and rms[i] < 0.15 * base:
+                res['rmssd_floor'] = float(tr[i])
+                break
+    except Exception:
+        pass
+    # --- переломы тренда сглаженной RR (2 излома, без разминки) ---
+    try:
+        yl = ys[load]
+        lo = int(len(tl) * 0.12)
+        idxs = [lo, len(tl) - 1]
+        for _ in range(2):
+            best = None
+            for i in range(lo, len(tl) - 1):
+                if i in idxs:
+                    continue
+                cand = sorted(idxs + [i])
+                sse = 0.0
+                for a, bb in zip(cand[:-1], cand[1:]):
+                    xs, yy = tl[a:bb + 1], yl[a:bb + 1]
+                    if len(xs) > 1:
+                        sse += np.sum((yy - np.polyval(np.polyfit(xs, yy, 1), xs)) ** 2)
+                if best is None or sse < best[0]:
+                    best = (sse, i)
+            idxs = sorted(idxs + [best[1]])
+        bps = [float(tl[i]) for i in idxs[1:-1]]
+        if len(bps) > 0:
+            res['trend_bp1'] = bps[0]
+        if len(bps) > 1:
+            res['trend_bp2'] = bps[1]
+    except Exception:
+        pass
+    return res
+
+
+# краткая научная расшифровка маркеров (вставляется в RR-only HTML)
+RR_MARKERS_HTML = """
+<div style="font-family:sans-serif;max-width:1000px;margin:16px auto;padding:12px 18px;
+     border:1px solid #ddd;border-radius:8px;background:#fafafa;color:#222">
+  <h3 style="margin:4px 0">RR-маркеры порогов (кандидаты, смотреть «на глаз»)</h3>
+  <ul style="line-height:1.5;margin:6px 0">
+    <li><b style="color:#1f77b4">VT1?</b> — скользящий <b>DFA α1</b> пересекает
+        <b>0.75</b>. α1 отражает «фрактальность» ритма; по литературе снижение до
+        ~0.75 связывают с <b>аэробным (лактатным) порогом</b> — кандидат в точку&nbsp;1.</li>
+    <li><b style="color:#d62728">VT2?</b> — <b>DFA α1</b> пересекает <b>0.5</b>;
+        связывают с <b>точкой респираторной компенсации (RCP)</b> — кандидат в точку&nbsp;3.</li>
+    <li><b style="color:#9467bd">ВСР↓</b> — <b>исчезновение вариабельности</b>
+        (RMSSD падает до «пола»): краткосрочная вариабельность ритма гаснет по мере
+        роста нагрузки (маркер по идее <i>Михайлова</i>).</li>
+    <li><b style="color:#2ca02c">изл.1 / изл.2</b> — <b>переломы тренда</b> сглаженной
+        RR (нагрузочной ритмограммы): перегибы скорости изменения RR
+        (маркер по идее <i>Похачевского</i>).</li>
+    <li><b>Чёрная линия</b> — начало восстановления (разворот RR вверх); слева от неё —
+        нагрузка. Надир RR (минимум) ≈ аэробный лимит и практически совпадает с этой линией.</li>
+  </ul>
+  <p style="margin:6px 0;color:#a33"><b>Важно:</b> на нашей выборке (48 чел., метки из
+     газа) эти маркеры <b>индивидуально</b> совпадают с газовыми точками 1–3 слабо
+     (не лучше «среднего по группе»). Поэтому это <b>ориентиры для глаза</b>, а не
+     точный автоматический ответ; надёжно по RR определяются только начало
+     восстановления и аэробный лимит (надир). Подробности — в
+     <i>RR_точки_исследование.html</i>.</p>
+</div>
+"""
+
+
 def detect_recovery_start_vo2(times_sec, vo2, sigma=4, hold_s=15.0, min_gap_s=6.0):
     """Начало восстановления по VO2: момент, когда VO2 начинает устойчиво
     ПАДАТЬ (уходит с пика вниз). Совпадает с началом роста RR; спад VO2 резкий
@@ -757,18 +891,8 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
             recovery_minutes = 0
     rec_start = float(t[-1]) - recovery_minutes * 60.0
 
-    # ---- точка 4 (аэробный лимит по RR) = надир сглаженной RR ----
-    # (максимум ЧСС = самый короткий интервал; по RR это единственная
-    #  надёжная точка. Точки 1-3 по одной RR не восстанавливаются — см.
-    #  RR_точки_исследование.html, поэтому здесь не рисуются.)
-    t4 = None
-    try:
-        reg = (t >= 0.30 * t[-1]) & (t <= rec_start)
-        if reg.sum() > 3:
-            idxr = np.where(reg)[0]
-            t4 = float(t[idxr[int(np.argmin(rr_s[idxr]))]])
-    except Exception:
-        t4 = None
+    # ---- маркеры-кандидаты по RR (для оценки учёными «на глаз») ----
+    markers = rr_candidate_markers(t, hampel_filter(ovr.values), rr_s, rec_start)
 
     # ---- график: RR (сырой) + RR сглаженный ----
     fig = make_subplots(rows=2, cols=1, vertical_spacing=0.13)
@@ -797,17 +921,27 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
                        text='← начало восстановления', showarrow=False,
                        font=dict(color='black', size=11),
                        xanchor='left', yanchor='bottom', xshift=4)
-    # точка 4 (аэробный лимит по RR = надир) — коричневая пунктирная линия
-    if t4 is not None:
+    # маркеры-кандидаты (для точек 1 и 3) — тонкие цветные линии с подписями
+    mk_style = [
+        ('alpha1_075', 'VT1?', '#1f77b4', 0.10),   # DFA α1=0.75 → аэробный порог
+        ('trend_bp1',  'изл.1', '#2ca02c', 0.20),  # 1-й перелом тренда (Похачевский)
+        ('rmssd_floor', 'ВСР↓', '#9467bd', 0.30),  # исчезновение вариабельности (Михайлов)
+        ('trend_bp2',  'изл.2', '#2ca02c', 0.20),  # 2-й перелом тренда
+        ('alpha1_05',  'VT2?', '#d62728', 0.10),   # DFA α1=0.5 → RCP
+    ]
+    for key, lbl, color, ypos in mk_style:
+        x = markers.get(key)
+        if x is None:
+            continue
         for i in (1, 2):
             suf = '' if i == 1 else str(i)
             fig.add_shape(type='line', xref='x' + suf, yref='y' + suf + ' domain',
-                          x0=t4, x1=t4, y0=0, y1=1,
-                          line=dict(color='#8c564b', width=1.5, dash='dashdot'))
-        fig.add_annotation(x=t4, xref='x', yref='y domain', y=0.04,
-                           text='4', showarrow=False,
-                           font=dict(color='#8c564b', size=13),
-                           xanchor='left', yanchor='bottom', xshift=3)
+                          x0=x, x1=x, y0=0, y1=1,
+                          line=dict(color=color, width=1.2, dash='dot'))
+        fig.add_annotation(x=x, xref='x2', yref='y2 domain', y=ypos,
+                           text=lbl, showarrow=False,
+                           font=dict(color=color, size=10),
+                           xanchor='left', yanchor='bottom', xshift=2)
     for i, ttl in ((1, 'RR'), (2, 'RR сглаж.')):
         suf = '' if i == 1 else str(i)
         fig.add_annotation(text='<b>' + ttl + '</b>',
@@ -818,6 +952,10 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
 
     html_path = os.path.join(out_dir, f"gas_RR_{name}.html")
     fig.write_html(html_path)
+    # вставляем описание маркеров в тело страницы + пользовательский JS
+    html = open(html_path, encoding='utf-8').read()
+    html = html.replace('</body>', RR_MARKERS_HTML + '</body>')
+    open(html_path, 'w', encoding='utf-8').write(html)
     with open(html_path, 'a', encoding='utf-8') as f:
         f.write(CUSTOM_JS)
     if download:
@@ -827,7 +965,7 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
         except Exception:
             pass
     return {'html_path': html_path, 'recovery_start': rec_start,
-            'recovery_minutes': recovery_minutes}
+            'recovery_minutes': recovery_minutes, 'markers': markers}
 
 
 # ------------------------------------------------------------------ #
