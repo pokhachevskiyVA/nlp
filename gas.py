@@ -756,36 +756,38 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
         except Exception:
             faza_min = None
 
-    # ГЛАВНОЕ: если минуты не заданы вручную — считаем АВТОМАТИЧЕСКИ.
-    # Начало восстановления = момент, когда VO2 начинает падать (апогей),
-    # он же совпадает с началом роста RR-интервалов. VO2-спад — основной
-    # ориентир (резкий и однозначный), RR — подтверждение. Без клавиатуры.
+    # ГЛАВНОЕ: длительность восстановления считаем МАТЕМАТИЧЕСКИ ПО RR
+    # (в будущем газа может не быть). Восстановление = конец записи RR минус
+    # момент начала устойчивого роста RR-интервалов. Отсчёт ведём ОТ КОНЦА
+    # записи — так расчёт устойчив к рассинхрону/разной длине записей RR и газа
+    # (обе останавливаются вместе в конце теста).
+    # VO2-спад (и VE) — ТОЛЬКО для сверки/валидации и как запас, если RR не вышел.
     if recovery_minutes is None and recovery_auto:
+        rr_onset = rr_total = None
+        try:
+            r = np.asarray(df_res['ОВР'].values, dtype=float)
+            r = r[np.isfinite(r)]
+            rr_onset = detect_recovery_start_rr(r)
+            rc = _clean_rr(r)
+            rr_total = float(np.cumsum(rc)[-1] / 1000.0)
+        except Exception:
+            rr_onset = rr_total = None
+        # валидация — спад VO2 (если есть газовые данные)
         try:
             vo2_onset = detect_recovery_start_vo2(times_sec, df['VO2'].loc[2:].values)
         except Exception:
             vo2_onset = None
-        try:
-            rr_onset = detect_recovery_start_rr(df_res['ОВР'].values)
-        except Exception:
-            rr_onset = None
 
-        onset = None
-        if vo2_onset is not None and rr_onset is not None:
-            # оба маркируют один момент: близки -> усредняем, иначе доверяем VO2
-            onset = (0.5 * (vo2_onset + rr_onset)
-                     if abs(vo2_onset - rr_onset) <= 25 else vo2_onset)
-        else:
-            onset = vo2_onset if vo2_onset is not None else rr_onset
-
-        if onset is not None:
-            recovery_minutes = round((times_sec.max() - onset) / 60.0, 1)
-            v_txt = f'{vo2_onset:.0f}с' if vo2_onset is not None else '—'
-            r_txt = f'{rr_onset:.0f}с' if rr_onset is not None else '—'
+        if rr_onset is not None and rr_total is not None:
+            recovery_minutes = round((rr_total - rr_onset) / 60.0, 1)
+            v_txt = f'{vo2_onset:.0f}с' if vo2_onset is not None else 'нет газа'
             f_txt = f', Фаза {faza_min} мин' if faza_min is not None else ''
-            print(f'Авто: начало восстановления ≈ {onset:.0f} с '
-                  f'-> {recovery_minutes} мин восстановления  '
-                  f'(VO2-спад {v_txt}, RR-рост {r_txt}{f_txt})')
+            print(f'Авто по RR: восстановление {recovery_minutes} мин '
+                  f'(старт роста RR {rr_onset:.0f}с из {rr_total:.0f}с записи). '
+                  f'Сверка: VO2-спад {v_txt}{f_txt}')
+        elif vo2_onset is not None:              # запас, если RR не удалось
+            recovery_minutes = round((times_sec.max() - vo2_onset) / 60.0, 1)
+            print(f'RR не удалось; запас по спаду VO2: {recovery_minutes} мин')
 
     # Запасной путь: метка прибора, затем ручной ввод (если авто не сработало)
     if recovery_minutes is None:
