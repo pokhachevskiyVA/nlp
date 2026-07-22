@@ -853,13 +853,21 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     count_graphs = len(list_periods_all)
     n_rows = (count_graphs + 1) // 2
 
-    fig = make_subplots(rows=n_rows, cols=2, subplot_titles=list_periods_all,
-                        vertical_spacing=0.055)
+    # без стандартных заголовков сверху (там теперь ось «% от МПК») —
+    # название кривой печатаем ВНУТРИ панели (слева вверху)
+    fig = make_subplots(rows=n_rows, cols=2, vertical_spacing=0.06)
     for i, period in enumerate(list_periods_all):
         row = i // 2 + 1
         col = i % 2 + 1
         plot_single(fig, row, col, df, period, colors[i])
         fig.update_xaxes(title_text='Время (сек)', row=row, col=col)
+        suf = '' if i == 0 else str(i + 1)
+        fig.add_annotation(text='<b>' + period + '</b>',
+                           xref='x' + suf + ' domain', yref='y' + suf + ' domain',
+                           x=0.02, y=0.97, showarrow=False,
+                           xanchor='left', yanchor='top',
+                           font=dict(size=12, color='#222'),
+                           bgcolor='rgba(255,255,255,0.7)')
 
     fig.update_layout(
         title=f'Динамика показателей газового анализа {name}',
@@ -888,8 +896,10 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
             for i in range(1, count_graphs + 1):
                 suf = '' if i == 1 else str(i)
                 topkey = f'xaxis{count_graphs + i}'      # уникальные верхние оси
+                # matches='x{i}' жёстко привязывает верхнюю ось к нижней:
+                # они синхронны и при масштабировании/перетаскивании
                 ax = dict(overlaying='x' + suf, side='top', anchor='y' + suf,
-                          range=[x_lo, x_hi], tickmode='array',
+                          matches='x' + suf, tickmode='array',
                           tickvals=tick_t, ticktext=tick_txt,
                           showgrid=False, ticks='outside',
                           tickfont=dict(size=9, color='#555'))
