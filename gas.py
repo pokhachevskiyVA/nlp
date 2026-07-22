@@ -862,11 +862,12 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
         plot_single(fig, row, col, df, period, colors[i])
         fig.update_xaxes(title_text='Время (сек)', row=row, col=col)
         suf = '' if i == 0 else str(i + 1)
-        # название панели — СВЕРХУ, чуть выше верхней оси «% от МПК»
+        # название панели — СВЕРХУ СЛЕВА (чтобы не сталкивалось с центральной
+        # подписью верхней оси «% от МПК»)
         fig.add_annotation(text='<b>' + period + '</b>',
                            xref='x' + suf + ' domain', yref='y' + suf + ' domain',
-                           x=0.5, y=1.20, showarrow=False,
-                           xanchor='center', yanchor='bottom',
+                           x=0.0, y=1.22, showarrow=False,
+                           xanchor='left', yanchor='bottom',
                            font=dict(size=13, color='#222'))
 
     fig.update_layout(
@@ -914,10 +915,9 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                           matches='x' + suf, tickmode='array',
                           tickvals=tick_t, ticktext=tick_txt, tickangle=0,
                           showgrid=False, ticks='outside',
-                          tickfont=dict(size=9, color='#555'))
-                if i <= 2:                               # заголовок только сверху
-                    ax['title'] = dict(text='% от МПК (VO2)',
-                                       font=dict(size=10, color='#555'))
+                          tickfont=dict(size=9, color='#555'),
+                          title=dict(text='% от МПК',        # подпись на КАЖДОМ
+                                     font=dict(size=9, color='#555')))
                 top_layout[topkey] = ax
                 # служебный (невидимый) трейс, чтобы верхняя ось отрисовалась
                 fig.add_trace(go.Scatter(
