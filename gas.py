@@ -133,6 +133,44 @@ def detect_recovery_start_rr(rr_intervals, sigma=6, hold_s=15.0):
     return float(t[onset])
 
 
+def detect_recovery_start_vo2(times_sec, vo2, sigma=5, hold_s=15.0):
+    """Начало восстановления по VO2: момент, когда VO2 начинает устойчиво
+    ПАДАТЬ (уходит с пика/плато вниз). Этот момент совпадает с началом роста
+    RR-интервалов и служит надёжным ориентиром (спад VO2 резкий и однозначный).
+
+    Возвращает время в секундах или None.
+    """
+    tt = np.asarray(times_sec, dtype=float)
+    v = np.asarray(vo2, dtype=float)
+    ok = np.isfinite(tt) & np.isfinite(v)
+    tt, v = tt[ok], v[ok]
+    if len(tt) < 12:
+        return None
+    vs = gaussian_smoothing(pd.Series(v).interpolate(limit_direction='both').values,
+                            sigma=sigma)
+    T = tt[-1]
+    reg = np.where((tt >= 0.30 * T) & (tt <= 0.99 * T))[0]
+    if len(reg) < 8:
+        return None
+    a, z = int(reg[0]), int(reg[-1])
+    pk = a + int(np.argmax(vs[a:z + 1]))            # пик VO2 (апогей)
+    slope = np.gradient(vs, tt)
+    fall = slope[pk:z + 1]
+    fall = fall[fall < 0]
+    if len(fall) == 0:
+        return float(tt[pk])
+    thr = 0.25 * abs(float(np.percentile(fall, 25)))
+    dt = float(np.median(np.diff(tt))) or 1.0
+    w = max(3, int(hold_s / dt))
+    onset = pk
+    for k in range(pk, max(pk + 1, z - w)):
+        seg = slope[k:k + w]
+        if seg.max() < 0 and (-seg.mean()) > thr:   # устойчивый спад
+            onset = k
+            break
+    return float(tt[onset])
+
+
 # ------------------------------------------------------------------ #
 #  Авто-поиск точек 1-4 (черновик, задача 4)
 # ------------------------------------------------------------------ #
@@ -458,27 +496,32 @@ def detect_points(df, times, rec_start, return_details=False):
     elif v1[2] is not None and hi2 > v1[2][0] > lo2:
         res[2] = v1[2]
 
-    # --- Точка 4 (аэробный лимит): выход VO2 на плато. По статье это ---
-    #     ПОСЛЕДНЯЯ точка, т.е. позже RCP -> ищем строго после точки 3.
+    # --- Точка 4 (аэробный лимит): НАЧАЛО плато VO2 — момент, когда VO2 ---
+    #     перестаёт расти (апогей аэробного метаболизма). Это РАННИЙ край
+    #     плато; начало восстановления (спад VO2) — поздний край, поэтому
+    #     точка 4 всегда строго ВНУТРИ нагрузки и раньше восстановления.
     lo4 = max(te[0] + 0.55 * dur, (t3 if t3 is not None else te[0]))
     t4 = None
     try:
-        pk = [q for q in _kink_peaks(te, C['VO2'], win, -1, ntop=4)
-              if q[0] > lo4]
-        if pk:
-            t4 = max(pk, key=lambda q: q[0])[0]
+        vo2s = np.asarray(C['VO2'], dtype=float)
+        sub = np.where(te > lo4)[0]
+        if len(sub) >= 2:
+            i0 = int(sub[0])
+            i_pk = i0 + int(np.argmax(vo2s[i0:]))     # пик VO2 (апогей)
+            v0, vpk = float(vo2s[i0]), float(vo2s[i_pk])
+            # аэробный лимит = момент, когда VO2 прошёл 95% пути к пику
+            # (подход к апогею). Для плато — начало плато, для крутого роста —
+            # чуть раньше пика: всегда строго ВНУТРИ нагрузки, до восстановления.
+            target = v0 + 0.95 * (vpk - v0)
+            t4 = float(te[i_pk])
+            for k in range(i0, i_pk + 1):
+                if vo2s[k] >= target:
+                    t4 = float(te[k])
+                    break
     except Exception:
-        pass
-    if t4 is None:                                   # запас: пик плато VO2 после RCP
-        try:
-            yv = np.asarray(C['VO2'])
-            sub = np.where(te > lo4)[0]
-            if len(sub) >= 2:
-                t4 = float(te[sub[int(np.argmax(yv[sub]))]])
-        except Exception:
-            t4 = None
+        t4 = None
     if t4 is not None:
-        res[4] = (t4, val_at('VO2', t4), 'Аэробный лимит (плато VO2)')
+        res[4] = (t4, val_at('VO2', t4), 'Аэробный лимит (начало плато VO2)')
     elif v1[4] is not None and (t3 is None or v1[4][0] > t3):
         res[4] = v1[4]
 
@@ -699,27 +742,36 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
         except Exception:
             faza_min = None
 
-    # ГЛАВНОЕ: если минуты не заданы вручную — считаем АВТОМАТИЧЕСКИ по RR
-    # (момент устойчивого роста RR-интервалов после нагрузки). Без клавиатуры.
+    # ГЛАВНОЕ: если минуты не заданы вручную — считаем АВТОМАТИЧЕСКИ.
+    # Начало восстановления = момент, когда VO2 начинает падать (апогей),
+    # он же совпадает с началом роста RR-интервалов. VO2-спад — основной
+    # ориентир (резкий и однозначный), RR — подтверждение. Без клавиатуры.
     if recovery_minutes is None and recovery_auto:
+        try:
+            vo2_onset = detect_recovery_start_vo2(times_sec, df['VO2'].loc[2:].values)
+        except Exception:
+            vo2_onset = None
         try:
             rr_onset = detect_recovery_start_rr(df_res['ОВР'].values)
         except Exception:
             rr_onset = None
-        if rr_onset is not None:
-            # Комбинированная защита: ручная/приборная метка может только
-            # ЗАПАЗДЫВАТЬ (истинный момент не позже неё). Поэтому не берём
-            # начало восстановления позже метки прибора — при необходимости
-            # сдвигаем назад к RR-подъёму.
-            faza_sec = (times_sec.max() - faza_min * 60.0) if faza_min else None
-            if faza_sec is not None:
-                rr_onset = min(rr_onset, faza_sec)
-            recovery_minutes = round((times_sec.max() - rr_onset) / 60.0, 1)
-            msg = (f'Авто (по RR): начало восстановления ≈ {rr_onset:.0f} с '
-                   f'-> {recovery_minutes} мин восстановления')
-            if faza_min is not None:
-                msg += f'  (метка прибора Фаза: {faza_min} мин)'
-            print(msg)
+
+        onset = None
+        if vo2_onset is not None and rr_onset is not None:
+            # оба маркируют один момент: близки -> усредняем, иначе доверяем VO2
+            onset = (0.5 * (vo2_onset + rr_onset)
+                     if abs(vo2_onset - rr_onset) <= 25 else vo2_onset)
+        else:
+            onset = vo2_onset if vo2_onset is not None else rr_onset
+
+        if onset is not None:
+            recovery_minutes = round((times_sec.max() - onset) / 60.0, 1)
+            v_txt = f'{vo2_onset:.0f}с' if vo2_onset is not None else '—'
+            r_txt = f'{rr_onset:.0f}с' if rr_onset is not None else '—'
+            f_txt = f', Фаза {faza_min} мин' if faza_min is not None else ''
+            print(f'Авто: начало восстановления ≈ {onset:.0f} с '
+                  f'-> {recovery_minutes} мин восстановления  '
+                  f'(VO2-спад {v_txt}, RR-рост {r_txt}{f_txt})')
 
     # Запасной путь: метка прибора, затем ручной ввод (если авто не сработало)
     if recovery_minutes is None:
