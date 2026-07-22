@@ -554,24 +554,33 @@ document.addEventListener('DOMContentLoaded', function() {
     // Правый клик не вызывает контекстное меню
     gd.oncontextmenu = function(event) { event.preventDefault(); };
 
-    // Собираем список осей всех подграфиков
+    // Собираем список осей подграфиков (пропускаем верхние оси «% от МПК»,
+    // у них задан overlaying — по ним крестик не рисуем)
     var xrefs = [];
     Object.keys(gd.layout).forEach(function(k) {
         var m = k.match(/^xaxis(\d*)$/);
-        if (m) { var s = m[1]; xrefs.push({x: 'x' + s, y: 'y' + s}); }
+        if (m && !gd.layout[k].overlaying) {
+            xrefs.push({x: 'x' + m[1], y: 'y' + m[1]});
+        }
     });
     xrefs.sort(function(a, b) {
         var na = parseInt(a.x.slice(1)) || 1, nb = parseInt(b.x.slice(1)) || 1;
         return na - nb;
     });
 
-    var ORIG_TRACES = gd.data.length;                    // исходные кривые
+    // Реальные кривые = трейсы, чьё имя не начинается на «_» (служебные
+    // трейсы для отрисовки верхних осей начинаются на «_»)
+    var ORIG_TRACES = 0;
+    gd.data.forEach(function(tr) {
+        if (!(tr.name && tr.name.charAt(0) === '_')) { ORIG_TRACES++; }
+    });
+    var INIT_TRACES = gd.data.length;                    // все трейсы при загрузке
     var BASE_SHAPES = (gd.layout.shapes || []).slice();  // постоянные линии
 
     function removeExtraTraces() {
-        if (gd.data.length > ORIG_TRACES) {
+        if (gd.data.length > INIT_TRACES) {
             var idx = [];
-            for (var i = ORIG_TRACES; i < gd.data.length; i++) { idx.push(i); }
+            for (var i = INIT_TRACES; i < gd.data.length; i++) { idx.push(i); }
             return Plotly.deleteTraces(gd, idx);
         }
         return Promise.resolve();
@@ -716,8 +725,13 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     new_ovr = pd.concat([empty_elements, ser], ignore_index=True)
     df['RR'] = new_ovr
 
+    # ---- Кислородный пульс O2pulse = VO2 / ЧСС, где ЧСС = 60000 / RR(мс) ---
+    #      т.е. O2pulse = VO2 * RR / 60000 (мл O2 за сердечное сокращение)
+    df['O2pulse'] = (df['VO2'].iloc[2:].astype(float)
+                     * df['RR'].iloc[2:].astype(float) / 60000.0)
+
     # ---- Сглаживание показателей ----
-    list_periods = ['VO2', 'VCO2', 'RER', 'VE', 'VE/VCO2', 'RR']
+    list_periods = ['VO2', 'VCO2', 'RER', 'VE', 'VE/VCO2', 'RR', 'O2pulse']
     for period in list_periods:
         data = replace_outliers_with_neighbors(df[period].iloc[2:].astype(float))
         arr = gaussian_smoothing(data, sigma=5)
@@ -832,14 +846,15 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
             hoverinfo='text'
         ), row=row, col=col)
 
-    list_periods_all = ['VO2', 'VCO2', 'RER', 'VE', 'VE/VCO2', 'RR']
+    list_periods_all = ['VO2', 'VCO2', 'RER', 'VE', 'VE/VCO2', 'RR', 'O2pulse']
     list_periods_all += [x + '_ga' for x in list_periods_all]
-    colors = ['blue', 'orange', 'green', 'red', 'purple', 'green']
+    colors = ['blue', 'orange', 'green', 'red', 'purple', 'green', 'teal']
     colors += colors
     count_graphs = len(list_periods_all)
+    n_rows = (count_graphs + 1) // 2
 
-    fig = make_subplots(rows=(count_graphs + 1) // 2, cols=2,
-                        subplot_titles=list_periods_all)
+    fig = make_subplots(rows=n_rows, cols=2, subplot_titles=list_periods_all,
+                        vertical_spacing=0.055)
     for i, period in enumerate(list_periods_all):
         row = i // 2 + 1
         col = i % 2 + 1
@@ -848,9 +863,49 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
 
     fig.update_layout(
         title=f'Динамика показателей газового анализа {name}',
-        height=600 + (count_graphs // 2) * 150,
+        height=300 + n_rows * 230,
         showlegend=False,
     )
+
+    # ---- Вторая ось абсцисс СВЕРХУ: % от МПК (VO2 в % от максимума) ----
+    # МПК = пик VO2 за тест. Тик-метки % ставим по времени, когда сглаженная
+    # VO2 достигает данного % от пика на ВОСХОДЯЩЕЙ ветви (фаза нагрузки),
+    # чтобы шкала совпадала со статьёй (ось х = % VO2max).
+    try:
+        vo2_ga = df['VO2_ga'].loc[2:].to_numpy(dtype=float)
+        vmax = float(np.nanmax(vo2_ga))
+        pk_i = int(np.nanargmax(vo2_ga))
+        tick_t, tick_txt = [], []
+        for pct in (20, 40, 60, 80, 100):
+            target = pct / 100.0 * vmax
+            hit = np.where(vo2_ga[:pk_i + 1] >= target)[0]
+            if len(hit):
+                tick_t.append(float(times_sec[hit[0]]))
+                tick_txt.append(f'{pct}%')
+        x_lo, x_hi = float(np.nanmin(times_sec)), float(np.nanmax(times_sec))
+        if tick_t:
+            top_layout = {}
+            for i in range(1, count_graphs + 1):
+                suf = '' if i == 1 else str(i)
+                topkey = f'xaxis{count_graphs + i}'      # уникальные верхние оси
+                ax = dict(overlaying='x' + suf, side='top', anchor='y' + suf,
+                          range=[x_lo, x_hi], tickmode='array',
+                          tickvals=tick_t, ticktext=tick_txt,
+                          showgrid=False, ticks='outside',
+                          tickfont=dict(size=9, color='#555'))
+                if i <= 2:                               # заголовок только сверху
+                    ax['title'] = dict(text='% от МПК (VO2)',
+                                       font=dict(size=10, color='#555'))
+                top_layout[topkey] = ax
+                # служебный (невидимый) трейс, чтобы верхняя ось отрисовалась
+                fig.add_trace(go.Scatter(
+                    x=[x_lo, x_hi], y=[np.nan, np.nan],
+                    xaxis='x' + str(count_graphs + i), yaxis='y' + suf,
+                    mode='markers', name='_ax', opacity=0,
+                    hoverinfo='skip', showlegend=False))
+            fig.update_layout(**top_layout)
+    except Exception as e:
+        print(f'Верхняя ось %МПК не построена: {e}')
 
     # ---- Постоянные вертикальные линии на ВСЕХ подграфиках ----
     def add_vline_all(x, color, dash='dash', width=2):
@@ -864,10 +919,11 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     add_vline_all(rec_start, 'black', dash='solid', width=2)
     # подпись выносим ВПРАВО от линии (в пустую зону восстановления),
     # чтобы она не наезжала на номера точек 1-4 слева
-    fig.add_annotation(x=rec_start, xref='x', yref='y domain', y=1.06,
+    # подписи выносим ВНИЗ подграфика (у верхнего края теперь ось «% от МПК»)
+    fig.add_annotation(x=rec_start, xref='x', yref='y domain', y=0.04,
                        text='← начало восстановления', showarrow=False,
                        font=dict(color='black', size=11),
-                       xanchor='left', xshift=4)
+                       xanchor='left', yanchor='bottom', xshift=4)
 
     # Доп. кандидаты (серые тонкие линии) — рисуем ПОД основными точками
     pt_times = {points[n][0] for n in (1, 2, 3, 4)
@@ -885,10 +941,10 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
             if not p:
                 continue
             add_vline_all(p[0], pt_colors[num], dash='dashdot', width=1.5)
-            fig.add_annotation(x=p[0], xref='x', yref='y domain', y=1.06,
+            fig.add_annotation(x=p[0], xref='x', yref='y domain', y=0.04,
                                text=str(num), showarrow=False,
                                font=dict(color=pt_colors[num], size=13),
-                               xanchor='center')
+                               xanchor='center', yanchor='bottom')
 
     # ---- Запись HTML ----
     html_path = os.path.join(out_dir, f"gas_{name}.html")
