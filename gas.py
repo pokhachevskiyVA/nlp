@@ -855,23 +855,24 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
 
     # без стандартных заголовков сверху (там теперь ось «% от МПК») —
     # название кривой печатаем ВНУТРИ панели (слева вверху)
-    fig = make_subplots(rows=n_rows, cols=2, vertical_spacing=0.06)
+    fig = make_subplots(rows=n_rows, cols=2, vertical_spacing=0.075)
     for i, period in enumerate(list_periods_all):
         row = i // 2 + 1
         col = i % 2 + 1
         plot_single(fig, row, col, df, period, colors[i])
         fig.update_xaxes(title_text='Время (сек)', row=row, col=col)
         suf = '' if i == 0 else str(i + 1)
+        # название панели — СВЕРХУ, чуть выше верхней оси «% от МПК»
         fig.add_annotation(text='<b>' + period + '</b>',
                            xref='x' + suf + ' domain', yref='y' + suf + ' domain',
-                           x=0.02, y=0.97, showarrow=False,
-                           xanchor='left', yanchor='top',
-                           font=dict(size=12, color='#222'),
-                           bgcolor='rgba(255,255,255,0.7)')
+                           x=0.5, y=1.20, showarrow=False,
+                           xanchor='center', yanchor='bottom',
+                           font=dict(size=13, color='#222'))
 
     fig.update_layout(
         title=f'Динамика показателей газового анализа {name}',
-        height=300 + n_rows * 230,
+        height=300 + n_rows * 250,
+        margin=dict(t=110),
         showlegend=False,
     )
 
