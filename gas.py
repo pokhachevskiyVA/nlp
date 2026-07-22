@@ -922,14 +922,15 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
                        font=dict(color='black', size=11),
                        xanchor='left', yanchor='bottom', xshift=4)
     # маркеры-кандидаты (для точек 1 и 3) — тонкие цветные линии с подписями
+    #  key, подпись, цвет, y-высота подписи, сторона (для разноса близких меток)
     mk_style = [
-        ('alpha1_075', 'VT1?', '#1f77b4', 0.10),   # DFA α1=0.75 → аэробный порог
-        ('trend_bp1',  'изл.1', '#2ca02c', 0.20),  # 1-й перелом тренда (Похачевский)
-        ('rmssd_floor', 'ВСР↓', '#9467bd', 0.30),  # исчезновение вариабельности (Михайлов)
-        ('trend_bp2',  'изл.2', '#2ca02c', 0.20),  # 2-й перелом тренда
-        ('alpha1_05',  'VT2?', '#d62728', 0.10),   # DFA α1=0.5 → RCP
+        ('alpha1_075', 'VT1?', '#1f77b4', 0.02, 'right'),  # DFA α1=0.75 → аэр. порог
+        ('trend_bp1',  'изл.1', '#2ca02c', 0.20, 'left'),  # 1-й перелом (Похачевский)
+        ('rmssd_floor', 'ВСР↓', '#9467bd', 0.30, 'left'),  # исч. вариабельности (Михайлов)
+        ('trend_bp2',  'изл.2', '#2ca02c', 0.20, 'left'),  # 2-й перелом тренда
+        ('alpha1_05',  'VT2?', '#d62728', 0.13, 'left'),   # DFA α1=0.5 → RCP
     ]
-    for key, lbl, color, ypos in mk_style:
+    for key, lbl, color, ypos, side in mk_style:
         x = markers.get(key)
         if x is None:
             continue
@@ -941,7 +942,8 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
         fig.add_annotation(x=x, xref='x2', yref='y2 domain', y=ypos,
                            text=lbl, showarrow=False,
                            font=dict(color=color, size=10),
-                           xanchor='left', yanchor='bottom', xshift=2)
+                           xanchor=side, yanchor='bottom',
+                           xshift=(-2 if side == 'right' else 2))
     for i, ttl in ((1, 'RR'), (2, 'RR сглаж.')):
         suf = '' if i == 1 else str(i)
         fig.add_annotation(text='<b>' + ttl + '</b>',
