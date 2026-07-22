@@ -833,6 +833,11 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     # ================================================================ #
     #  Построение графиков
     # ================================================================ #
+    # % от МПК для подсказки: VO2(t) / пик VO2 * 100 (по сглаженной кривой)
+    _vo2ga = df['VO2_ga'].loc[2:].astype(float)
+    _vmax = float(np.nanmax(_vo2ga.values)) if len(_vo2ga) else np.nan
+    df['pctVO2max'] = _vo2ga / _vmax * 100.0 if _vmax and _vmax == _vmax else np.nan
+
     def plot_single(fig, row, col, df, period, color):
         tt = pd.to_timedelta(df['t'].loc[2:]).dt.total_seconds()
         fig.add_trace(go.Scatter(
@@ -841,8 +846,11 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
             mode='lines+markers',
             name=period,
             marker=dict(size=4, color=color),
-            text=[f'Время: {time:.0f} с, {period}: {value:.2f}, RR: {rr:.0f} мс'
-                  for time, value, rr in zip(tt, df[period].loc[2:], df['RR'].loc[2:])],
+            text=[f'Время: {time:.0f} с, {period}: {value:.2f}, '
+                  f'RR: {rr:.0f} мс, %МПК: {pct:.0f}%'
+                  for time, value, rr, pct in zip(
+                      tt, df[period].loc[2:], df['RR'].loc[2:],
+                      df['pctVO2max'].loc[2:])],
             hoverinfo='text'
         ), row=row, col=col)
 
