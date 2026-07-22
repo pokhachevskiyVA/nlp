@@ -186,10 +186,14 @@ def detect_recovery_start_rr(rr_intervals, sigma=6, hold_s=15.0):
     return float(t[onset])
 
 
-def detect_recovery_start_vo2(times_sec, vo2, sigma=5, hold_s=15.0):
+def detect_recovery_start_vo2(times_sec, vo2, sigma=4, hold_s=15.0, min_gap_s=6.0):
     """Начало восстановления по VO2: момент, когда VO2 начинает устойчиво
-    ПАДАТЬ (уходит с пика/плато вниз). Этот момент совпадает с началом роста
-    RR-интервалов и служит надёжным ориентиром (спад VO2 резкий и однозначный).
+    ПАДАТЬ (уходит с пика вниз). Совпадает с началом роста RR; спад VO2 резкий
+    и однозначный — надёжный ориентир при наличии газовых данных.
+
+    Сглаживание — то же (Хампель+гаусс), что и на графике: пик VO2 (метка
+    100% МПК) и линия считаются по ОДНОЙ кривой. Линия ставится строго ПОСЛЕ
+    пика (минимум min_gap_s), чтобы 100% МПК и точка 4 остались левее.
 
     Возвращает время в секундах или None.
     """
@@ -199,29 +203,28 @@ def detect_recovery_start_vo2(times_sec, vo2, sigma=5, hold_s=15.0):
     tt, v = tt[ok], v[ok]
     if len(tt) < 12:
         return None
-    vs = gaussian_smoothing(pd.Series(v).interpolate(limit_direction='both').values,
-                            sigma=sigma)
+    vs = smooth_curve(v, sigma=sigma)
     T = tt[-1]
     reg = np.where((tt >= 0.30 * T) & (tt <= 0.99 * T))[0]
     if len(reg) < 8:
         return None
     a, z = int(reg[0]), int(reg[-1])
-    pk = a + int(np.argmax(vs[a:z + 1]))            # пик VO2 (апогей)
+    pk = a + int(np.argmax(vs[a:z + 1]))            # пик VO2 (апогей) = 100% МПК
     slope = np.gradient(vs, tt)
     fall = slope[pk:z + 1]
     fall = fall[fall < 0]
-    if len(fall) == 0:
-        return float(tt[pk])
-    thr = 0.25 * abs(float(np.percentile(fall, 25)))
     dt = float(np.median(np.diff(tt))) or 1.0
     w = max(3, int(hold_s / dt))
     onset = pk
-    for k in range(pk, max(pk + 1, z - w)):
-        seg = slope[k:k + w]
-        if seg.max() < 0 and (-seg.mean()) > thr:   # устойчивый спад
-            onset = k
-            break
-    return float(tt[onset])
+    if len(fall) > 0:
+        thr = 0.25 * abs(float(np.percentile(fall, 25)))
+        for k in range(pk, max(pk + 1, z - w)):
+            seg = slope[k:k + w]
+            if seg.max() < 0 and (-seg.mean()) > thr:   # устойчивый спад
+                onset = k
+                break
+    # линия — строго после пика (чтобы 100% МПК и точка 4 были левее)
+    return float(max(tt[onset], tt[pk] + min_gap_s))
 
 
 # ------------------------------------------------------------------ #
@@ -815,29 +818,36 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     # (обе останавливаются вместе в конце теста).
     # VO2-спад (и VE) — ТОЛЬКО для сверки/валидации и как запас, если RR не вышел.
     if recovery_minutes is None and recovery_auto:
-        # ОСНОВНОЙ расчёт — по сглаженной кривой RR (той же, что на графике):
-        # момент «колена» — начала подъёма RR после нагрузки.
-        rr_start = None
+        # RR-расчёт (для будущего, когда газа нет, и для сверки): длительность
+        # восстановления = «конец записи RR − старт подъёма RR», по сглаженной
+        # RR на её собственных часах, отсчёт от конца (устойчиво к рассинхрону).
+        rr_min = None
         try:
-            rr_start = detect_recovery_start_curve(times_sec,
-                                                   df['RR_ga'].loc[2:].values)
+            r = np.asarray(df_res['ОВР'].values, dtype=float)
+            r = r[np.isfinite(r)]
+            t_rr = np.cumsum(hampel_filter(r)) / 1000.0
+            rr_on = detect_recovery_start_curve(t_rr, smooth_curve(r))
+            rr_min = round((t_rr[-1] - rr_on) / 60.0, 1)
         except Exception:
-            rr_start = None
-        # валидация — спад VO2 (только для сверки; в будущем газа может не быть)
+            rr_min = None
+        # ОСНОВНАЯ линия при наличии газа — по спаду VO2 (строго после пика):
+        # гарантирует, что 100% МПК и точка 4 остаются в нагрузке, а VO2/VE
+        # падают на восстановлении.
+        vo2_onset = None
         try:
             vo2_onset = detect_recovery_start_vo2(times_sec, df['VO2'].loc[2:].values)
         except Exception:
             vo2_onset = None
 
-        if rr_start is not None:
-            recovery_minutes = round((times_sec.max() - rr_start) / 60.0, 1)
-            v_txt = f'{vo2_onset:.0f}с' if vo2_onset is not None else 'нет газа'
-            f_txt = f', Фаза {faza_min} мин' if faza_min is not None else ''
-            print(f'Авто по RR: начало восстановления {rr_start:.0f}с '
-                  f'-> {recovery_minutes} мин. Сверка: VO2-спад {v_txt}{f_txt}')
-        elif vo2_onset is not None:              # запас, если RR не удалось
+        if vo2_onset is not None:
             recovery_minutes = round((times_sec.max() - vo2_onset) / 60.0, 1)
-            print(f'RR не удалось; запас по спаду VO2: {recovery_minutes} мин')
+            r_txt = f'{rr_min} мин' if rr_min is not None else '—'
+            f_txt = f', Фаза {faza_min} мин' if faza_min is not None else ''
+            print(f'Авто: начало восстановления по спаду VO2 {vo2_onset:.0f}с '
+                  f'-> {recovery_minutes} мин. Сверка по RR: {r_txt}{f_txt}')
+        elif rr_min is not None:                 # газа нет — по RR
+            recovery_minutes = rr_min
+            print(f'Газа нет; начало восстановления по RR: {recovery_minutes} мин')
 
     # Запасной путь: метка прибора, затем ручной ввод (если авто не сработало)
     if recovery_minutes is None:
