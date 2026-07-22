@@ -67,12 +67,12 @@ def hampel_filter(series, win=7, k=3.0):
     return s.values
 
 
-def smooth_curve(series, sigma=4, win=7, k=3.0):
+def smooth_curve(series, sigma=5, win=7, k=3.0):
     """Правильное сглаживание для отображения и детекции: Хампель + гаусс."""
     return gaussian_smoothing(hampel_filter(series, win=win, k=k), sigma=sigma)
 
 
-def _smooth_series(series, sigma=4):
+def _smooth_series(series, sigma=5):
     """Совместимость: сглаживание ряда для детекции точек (Хампель + гаусс)."""
     return smooth_curve(series, sigma=sigma)
 
@@ -320,7 +320,7 @@ RR_MARKERS_HTML = """
 """
 
 
-def detect_recovery_start_vo2(times_sec, vo2, sigma=4, hold_s=15.0, min_gap_s=6.0):
+def detect_recovery_start_vo2(times_sec, vo2, sigma=5, hold_s=15.0, min_gap_s=6.0):
     """Начало восстановления по VO2: момент, когда VO2 начинает устойчиво
     ПАДАТЬ (уходит с пика вниз). Совпадает с началом роста RR; спад VO2 резкий
     и однозначный — надёжный ориентир при наличии газовых данных.
@@ -874,7 +874,7 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
 
     # шкала времени = накопленное время RR (сек); сглаживание — как на графике
     t = np.cumsum(hampel_filter(ovr.values)) / 1000.0
-    rr_s = smooth_curve(ovr.values, sigma=4)
+    rr_s = smooth_curve(ovr.values, sigma=5)
 
     # ---- начало восстановления по RR ----
     if recovery_minutes is None and recovery_auto:
@@ -1045,7 +1045,7 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     # ---- Сглаживание показателей (Хампель + гаусс, σ=4) ----
     list_periods = ['VO2', 'VCO2', 'RER', 'VE', 'VE/VCO2', 'RR', 'O2pulse']
     for period in list_periods:
-        arr = smooth_curve(df[period].iloc[2:].astype(float), sigma=4)
+        arr = smooth_curve(df[period].iloc[2:].astype(float), sigma=5)
         arr_with_nan = np.insert(arr, 0, [np.nan, np.nan])
         df[f'{period}_ga'] = arr_with_nan
 
