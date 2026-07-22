@@ -888,7 +888,7 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
         seg, ts = vo2_ga[:pk_i + 1], times_sec[:pk_i + 1]
         v_rest = float(np.nanmin(seg))                       # ~ уровень покоя
         tick_t, tick_txt = [], []
-        for pct in (10, 20, 30, 40, 50, 60, 70, 80, 90, 100):
+        for pct in (20, 40, 60, 80, 100):
             target = pct / 100.0 * vmax
             if pct == 100:
                 tick_t.append(float(ts[pk_i])); tick_txt.append('100%'); continue
@@ -912,7 +912,7 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                 # они синхронны и при масштабировании/перетаскивании
                 ax = dict(overlaying='x' + suf, side='top', anchor='y' + suf,
                           matches='x' + suf, tickmode='array',
-                          tickvals=tick_t, ticktext=tick_txt,
+                          tickvals=tick_t, ticktext=tick_txt, tickangle=0,
                           showgrid=False, ticks='outside',
                           tickfont=dict(size=9, color='#555'))
                 if i <= 2:                               # заголовок только сверху
