@@ -52,17 +52,70 @@ def gaussian_smoothing(data, sigma):
     return gaussian_filter1d(data, sigma=sigma, mode='nearest')
 
 
-def _smooth_series(series, sigma=5):
-    """Очистка выбросов + сглаживание произвольного ряда (для детекции)."""
-    s = pd.Series(np.asarray(series, dtype=float))
-    s = s.reset_index(drop=True)
-    s = s.interpolate(limit_direction='both')
-    mean, std = s.mean(), s.std()
-    if std > 0:
-        mask = np.abs(s - mean) > 3 * std
-        s[mask] = np.nan
-        s = s.interpolate(limit_direction='both')
-    return gaussian_smoothing(s.values, sigma=sigma)
+def hampel_filter(series, win=7, k=3.0):
+    """Фильтр Хампеля: заменяет выбросы на локальную медиану.
+
+    Аккуратнее прежней чистки по глобальному 1σ (та убирала ~треть точек):
+    точка считается выбросом, только если отклоняется от ЛОКАЛЬНОЙ медианы
+    более чем на k·MAD в скользящем окне. Форма кривой сохраняется.
+    """
+    s = pd.Series(np.asarray(series, dtype=float)).interpolate(limit_direction='both')
+    med = s.rolling(win, center=True, min_periods=1).median()
+    mad = (s - med).abs().rolling(win, center=True, min_periods=1).median() * 1.4826
+    bad = (s - med).abs() > k * (mad + 1e-9)
+    s[bad] = med[bad]
+    return s.values
+
+
+def smooth_curve(series, sigma=4, win=7, k=3.0):
+    """Правильное сглаживание для отображения и детекции: Хампель + гаусс."""
+    return gaussian_smoothing(hampel_filter(series, win=win, k=k), sigma=sigma)
+
+
+def _smooth_series(series, sigma=4):
+    """Совместимость: сглаживание ряда для детекции точек (Хампель + гаусс)."""
+    return smooth_curve(series, sigma=sigma)
+
+
+def detect_recovery_start_curve(t, y, frac=0.2, hold_s=14.0):
+    """Старт восстановления по СГЛАЖЕННОЙ кривой RR (той же, что на графике).
+
+    RR падает во время нагрузки до минимума и разворачивается вверх на
+    восстановлении. Ищем ПЕРВЫЙ устойчивый подъём после минимума: первый
+    момент, с которого наклон держится положительным (не меньше доли frac от
+    максимального наклона подъёма) на протяжении окна hold_s. Берём именно
+    первый (а не самый крутой) подъём — это и есть начало восстановления.
+
+    Возвращает время (в тех же единицах, что t) или None.
+    """
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    ok = np.isfinite(t) & np.isfinite(y)
+    t, y = t[ok], y[ok]
+    if len(t) < 12:
+        return None
+    T = t[-1]
+    reg = np.where((t >= 0.30 * T) & (t <= 0.99 * T))[0]
+    if len(reg) < 8:
+        return None
+    a, z = int(reg[0]), int(reg[-1])
+    m = a + int(np.argmin(y[a:z + 1]))                # минимум RR
+    sl = np.gradient(y, t)
+    rise = sl[m:z + 1]
+    rise = rise[rise > 0]
+    if len(rise) == 0:
+        return float(t[m])
+    smax = float(np.max(rise))
+    thr = frac * smax
+    dt = float(np.median(np.diff(t))) or 1.0
+    w = max(3, int(hold_s / dt))
+    onset = m
+    for k in range(m, max(m + 1, z - w)):
+        seg = sl[k:k + w]
+        if seg.mean() > thr and (seg > -0.02 * smax).all():
+            onset = k
+            break
+    return float(t[onset])
 
 
 # ------------------------------------------------------------------ #
@@ -730,11 +783,10 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     df['O2pulse'] = (df['VO2'].iloc[2:].astype(float)
                      * df['RR'].iloc[2:].astype(float) / 60000.0)
 
-    # ---- Сглаживание показателей ----
+    # ---- Сглаживание показателей (Хампель + гаусс, σ=4) ----
     list_periods = ['VO2', 'VCO2', 'RER', 'VE', 'VE/VCO2', 'RR', 'O2pulse']
     for period in list_periods:
-        data = replace_outliers_with_neighbors(df[period].iloc[2:].astype(float))
-        arr = gaussian_smoothing(data, sigma=5)
+        arr = smooth_curve(df[period].iloc[2:].astype(float), sigma=4)
         arr_with_nan = np.insert(arr, 0, [np.nan, np.nan])
         df[f'{period}_ga'] = arr_with_nan
 
@@ -763,28 +815,26 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     # (обе останавливаются вместе в конце теста).
     # VO2-спад (и VE) — ТОЛЬКО для сверки/валидации и как запас, если RR не вышел.
     if recovery_minutes is None and recovery_auto:
-        rr_onset = rr_total = None
+        # ОСНОВНОЙ расчёт — по сглаженной кривой RR (той же, что на графике):
+        # момент «колена» — начала подъёма RR после нагрузки.
+        rr_start = None
         try:
-            r = np.asarray(df_res['ОВР'].values, dtype=float)
-            r = r[np.isfinite(r)]
-            rr_onset = detect_recovery_start_rr(r)
-            rc = _clean_rr(r)
-            rr_total = float(np.cumsum(rc)[-1] / 1000.0)
+            rr_start = detect_recovery_start_curve(times_sec,
+                                                   df['RR_ga'].loc[2:].values)
         except Exception:
-            rr_onset = rr_total = None
-        # валидация — спад VO2 (если есть газовые данные)
+            rr_start = None
+        # валидация — спад VO2 (только для сверки; в будущем газа может не быть)
         try:
             vo2_onset = detect_recovery_start_vo2(times_sec, df['VO2'].loc[2:].values)
         except Exception:
             vo2_onset = None
 
-        if rr_onset is not None and rr_total is not None:
-            recovery_minutes = round((rr_total - rr_onset) / 60.0, 1)
+        if rr_start is not None:
+            recovery_minutes = round((times_sec.max() - rr_start) / 60.0, 1)
             v_txt = f'{vo2_onset:.0f}с' if vo2_onset is not None else 'нет газа'
             f_txt = f', Фаза {faza_min} мин' if faza_min is not None else ''
-            print(f'Авто по RR: восстановление {recovery_minutes} мин '
-                  f'(старт роста RR {rr_onset:.0f}с из {rr_total:.0f}с записи). '
-                  f'Сверка: VO2-спад {v_txt}{f_txt}')
+            print(f'Авто по RR: начало восстановления {rr_start:.0f}с '
+                  f'-> {recovery_minutes} мин. Сверка: VO2-спад {v_txt}{f_txt}')
         elif vo2_onset is not None:              # запас, если RR не удалось
             recovery_minutes = round((times_sec.max() - vo2_onset) / 60.0, 1)
             print(f'RR не удалось; запас по спаду VO2: {recovery_minutes} мин')
