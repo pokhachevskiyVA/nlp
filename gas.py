@@ -86,16 +86,22 @@ def _clean_rr(r, win=11):
     return s.rolling(win, center=True, min_periods=1).median().values
 
 
-def detect_recovery_start_rr(rr_intervals, sigma=6):
+def detect_recovery_start_rr(rr_intervals, sigma=6, hold_s=15.0):
     """Начало восстановления по RR: момент, когда после нагрузки RR-интервалы
-    начинают устойчиво расти (конец «дна» кривой RR).
+    НАЧИНАЮТ устойчиво расти («колено» кривой RR).
 
-    Во время нагрузки ЧСС растёт -> RR падает; на восстановлении RR резко
-    увеличивается. Ищем начало этого устойчивого роста (на сглаженной и
-    очищенной от артефактов кривой) — это и есть граница нагрузка/отдых.
+    Во время нагрузки ЧСС растёт -> RR падает до минимума на пике нагрузки;
+    на восстановлении RR разворачивается вверх. Ищем именно НАЧАЛО этого
+    подъёма: от минимума сглаженной (и очищенной от артефактов) кривой
+    находим первый момент, с которого наклон становится устойчиво
+    положительным и держится не менее hold_s секунд. Для острого «V» это
+    сам минимум, для плоского «дна» — конец плато (где кривая уходит вверх).
 
-    Возвращает время начала восстановления в секундах (по шкале RR,
-    совпадающей с осью газового анализа) или None.
+    Ранее бралась точка, где RR уже поднялся на ~15% над дном, из-за чего
+    метка систематически запаздывала — теперь берётся сам старт подъёма.
+
+    Возвращает время в секундах (шкала RR совпадает с осью газоанализа)
+    или None.
     """
     r = np.asarray(rr_intervals, dtype=float)
     r = r[np.isfinite(r)]
@@ -105,22 +111,26 @@ def detect_recovery_start_rr(rr_intervals, sigma=6):
     t = np.cumsum(rc) / 1000.0                      # секунды от начала теста
     rs = gaussian_smoothing(rc, sigma=sigma)
     T = t[-1]
-    idx = np.where((t >= 0.30 * T) & (t <= 0.99 * T))[0]  # восстановление — поздно
-    if len(idx) < 8:
+    reg = np.where((t >= 0.30 * T) & (t <= 0.99 * T))[0]   # восстановление — поздно
+    if len(reg) < 8:
         return None
-    seg = rs[idx]
-    vmin = float(np.min(seg))
-    rng = float(np.max(seg) - vmin) + 1e-9
-    band = 0.15 * rng
-    tail = float(np.mean(rs[idx[-3:]]))
-    cand = None
-    for k in range(len(idx)):
-        # последняя «донная» точка перед устойчивым ростом к концу записи
-        if seg[k] <= vmin + band and tail > seg[k] + 2 * band:
-            cand = int(idx[k])
-    if cand is None:
-        cand = int(idx[int(np.argmin(seg))])
-    return float(t[cand])
+    a, z = int(reg[0]), int(reg[-1])
+    m = a + int(np.argmin(rs[a:z + 1]))             # вершина (минимум RR)
+    slope = np.gradient(rs, t)
+    rise = slope[m:z + 1]
+    rise = rise[rise > 0]
+    if len(rise) == 0:
+        return float(t[m])
+    thr = 0.25 * float(np.percentile(rise, 75))     # порог «уверенного» роста
+    dt = float(np.median(np.diff(t))) or 0.5
+    w = max(5, int(hold_s / dt))                    # окно устойчивости
+    onset = m
+    for k in range(m, max(m + 1, z - w)):
+        seg = slope[k:k + w]
+        if seg.min() > 0 and seg.mean() > thr:      # рост начался и держится
+            onset = k
+            break
+    return float(t[onset])
 
 
 # ------------------------------------------------------------------ #
@@ -448,18 +458,28 @@ def detect_points(df, times, rec_start, return_details=False):
     elif v1[2] is not None and hi2 > v1[2][0] > lo2:
         res[2] = v1[2]
 
-    # --- Точка 4 (аэробный лимит): выход VO2 на плато. Комбинируем ---
-    #     порог по наклону (v1) и поздний загиб вниз VO2.
+    # --- Точка 4 (аэробный лимит): выход VO2 на плато. По статье это ---
+    #     ПОСЛЕДНЯЯ точка, т.е. позже RCP -> ищем строго после точки 3.
+    lo4 = max(te[0] + 0.55 * dur, (t3 if t3 is not None else te[0]))
     t4 = None
     try:
-        pk = [p for p in _kink_peaks(te, C['VO2'], win, -1, ntop=3)
-              if p[0] > te[0] + 0.6 * dur]
+        pk = [q for q in _kink_peaks(te, C['VO2'], win, -1, ntop=4)
+              if q[0] > lo4]
         if pk:
-            t4 = max(pk, key=lambda p: p[0])[0]
-            res[4] = (t4, val_at('VO2', t4), 'Аэробный лимит (плато VO2)')
+            t4 = max(pk, key=lambda q: q[0])[0]
     except Exception:
         pass
-    if res[4] is None and v1[4] is not None:
+    if t4 is None:                                   # запас: пик плато VO2 после RCP
+        try:
+            yv = np.asarray(C['VO2'])
+            sub = np.where(te > lo4)[0]
+            if len(sub) >= 2:
+                t4 = float(te[sub[int(np.argmax(yv[sub]))]])
+        except Exception:
+            t4 = None
+    if t4 is not None:
+        res[4] = (t4, val_at('VO2', t4), 'Аэробный лимит (плато VO2)')
+    elif v1[4] is not None and (t3 is None or v1[4][0] > t3):
         res[4] = v1[4]
 
     if return_details:
@@ -687,6 +707,13 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
         except Exception:
             rr_onset = None
         if rr_onset is not None:
+            # Комбинированная защита: ручная/приборная метка может только
+            # ЗАПАЗДЫВАТЬ (истинный момент не позже неё). Поэтому не берём
+            # начало восстановления позже метки прибора — при необходимости
+            # сдвигаем назад к RR-подъёму.
+            faza_sec = (times_sec.max() - faza_min * 60.0) if faza_min else None
+            if faza_sec is not None:
+                rr_onset = min(rr_onset, faza_sec)
             recovery_minutes = round((times_sec.max() - rr_onset) / 60.0, 1)
             msg = (f'Авто (по RR): начало восстановления ≈ {rr_onset:.0f} с '
                    f'-> {recovery_minutes} мин восстановления')
