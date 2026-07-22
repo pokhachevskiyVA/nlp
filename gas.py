@@ -721,6 +721,92 @@ def find_last_name(ext, directory='.'):
 
 
 # ------------------------------------------------------------------ #
+#  RR-only режим: только по .rr файлу (без газового анализа)
+# ------------------------------------------------------------------ #
+def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
+            download=True, recovery_auto=True):
+    """Строит HTML только по RR-файлу: RR-интервалы + сглаженная кривая и
+    авто-метка начала восстановления. Газ и ось «% от МПК» не используются.
+
+    Начало восстановления считается ПО RR: минимум сглаженной RR и первый
+    устойчивый подъём после него (то же, что и в основном режиме).
+    """
+    if rr_path is None:
+        rr_path = find_last_name('rr', directory)
+    df1 = pd.read_csv(rr_path)
+    df1.columns = ['Unnamed: 0']
+    ovr = df1['Unnamed: 0'].dropna().reset_index(drop=True).astype(float)
+    name = os.path.basename(rr_path)
+
+    # шкала времени = накопленное время RR (сек); сглаживание — как на графике
+    t = np.cumsum(hampel_filter(ovr.values)) / 1000.0
+    rr_s = smooth_curve(ovr.values, sigma=4)
+
+    # ---- начало восстановления по RR ----
+    if recovery_minutes is None and recovery_auto:
+        onset = detect_recovery_start_curve(t, rr_s)
+        if onset is not None:
+            recovery_minutes = round((t[-1] - onset) / 60.0, 1)
+            print(f'RR-only: начало восстановления {onset:.0f} с '
+                  f'-> {recovery_minutes} мин')
+    if recovery_minutes is None:
+        try:
+            recovery_minutes = float(
+                input('Введите минуты восстановления: ').strip().replace(',', '.'))
+        except (ValueError, EOFError):
+            recovery_minutes = 0
+    rec_start = float(t[-1]) - recovery_minutes * 60.0
+
+    # ---- график: RR (сырой) + RR сглаженный ----
+    fig = make_subplots(rows=2, cols=1, vertical_spacing=0.13)
+    fig.add_trace(go.Scatter(
+        x=t, y=ovr.values, mode='lines+markers', name='RR',
+        marker=dict(size=4, color='green'),
+        text=[f'Время: {tt:.0f} с, RR: {v:.0f} мс' for tt, v in zip(t, ovr.values)],
+        hoverinfo='text'), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=t, y=rr_s, mode='lines', name='RR_ga', line=dict(color='green'),
+        text=[f'Время: {tt:.0f} с, RR сглаж.: {v:.0f} мс' for tt, v in zip(t, rr_s)],
+        hoverinfo='text'), row=2, col=1)
+    for i in (1, 2):
+        fig.update_xaxes(title_text='Время (сек)', row=i, col=1)
+
+    fig.update_layout(title=f'RR-интервалы {name}',
+                      height=760, margin=dict(t=90), showlegend=False)
+
+    # линия начала восстановления (чёрная сплошная) на обоих подграфиках
+    for i in (1, 2):
+        suf = '' if i == 1 else str(i)
+        fig.add_shape(type='line', xref='x' + suf, yref='y' + suf + ' domain',
+                      x0=rec_start, x1=rec_start, y0=0, y1=1,
+                      line=dict(color='black', width=2))
+    fig.add_annotation(x=rec_start, xref='x', yref='y domain', y=0.04,
+                       text='← начало восстановления', showarrow=False,
+                       font=dict(color='black', size=11),
+                       xanchor='left', yanchor='bottom', xshift=4)
+    for i, ttl in ((1, 'RR'), (2, 'RR сглаж.')):
+        suf = '' if i == 1 else str(i)
+        fig.add_annotation(text='<b>' + ttl + '</b>',
+                           xref='x' + suf + ' domain', yref='y' + suf + ' domain',
+                           x=0.5, y=1.05, showarrow=False,
+                           xanchor='center', yanchor='bottom',
+                           font=dict(size=13, color='#222'))
+
+    html_path = os.path.join(out_dir, f"gas_RR_{name}.html")
+    fig.write_html(html_path)
+    with open(html_path, 'a', encoding='utf-8') as f:
+        f.write(CUSTOM_JS)
+    if download:
+        try:
+            from google.colab import files
+            files.download(html_path)
+        except Exception:
+            pass
+    return {'html_path': html_path, 'recovery_start': rec_start,
+            'recovery_minutes': recovery_minutes}
+
+
+# ------------------------------------------------------------------ #
 #  Основная функция
 # ------------------------------------------------------------------ #
 def make(rr_path=None, gas_path=None, recovery_minutes=None,
@@ -760,7 +846,13 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
 
     # ---- Загрузка газового анализа ----
     if gas_path is None:
-        gas_path = find_last_name('xlsx', directory)
+        try:
+            gas_path = find_last_name('xlsx', directory)
+        except FileNotFoundError:
+            print('Газовый файл (.xlsx) не найден — RR-only режим.')
+            return make_rr(rr_path=rr_path, recovery_minutes=recovery_minutes,
+                           out_dir=out_dir, download=download,
+                           recovery_auto=recovery_auto)
     df = pd.read_excel(gas_path)
 
     df['RER'] = df['RQ']
