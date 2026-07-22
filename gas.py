@@ -757,6 +757,19 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
             recovery_minutes = 0
     rec_start = float(t[-1]) - recovery_minutes * 60.0
 
+    # ---- точка 4 (аэробный лимит по RR) = надир сглаженной RR ----
+    # (максимум ЧСС = самый короткий интервал; по RR это единственная
+    #  надёжная точка. Точки 1-3 по одной RR не восстанавливаются — см.
+    #  RR_точки_исследование.html, поэтому здесь не рисуются.)
+    t4 = None
+    try:
+        reg = (t >= 0.30 * t[-1]) & (t <= rec_start)
+        if reg.sum() > 3:
+            idxr = np.where(reg)[0]
+            t4 = float(t[idxr[int(np.argmin(rr_s[idxr]))]])
+    except Exception:
+        t4 = None
+
     # ---- график: RR (сырой) + RR сглаженный ----
     fig = make_subplots(rows=2, cols=1, vertical_spacing=0.13)
     fig.add_trace(go.Scatter(
@@ -784,6 +797,17 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
                        text='← начало восстановления', showarrow=False,
                        font=dict(color='black', size=11),
                        xanchor='left', yanchor='bottom', xshift=4)
+    # точка 4 (аэробный лимит по RR = надир) — коричневая пунктирная линия
+    if t4 is not None:
+        for i in (1, 2):
+            suf = '' if i == 1 else str(i)
+            fig.add_shape(type='line', xref='x' + suf, yref='y' + suf + ' domain',
+                          x0=t4, x1=t4, y0=0, y1=1,
+                          line=dict(color='#8c564b', width=1.5, dash='dashdot'))
+        fig.add_annotation(x=t4, xref='x', yref='y domain', y=0.04,
+                           text='4', showarrow=False,
+                           font=dict(color='#8c564b', size=13),
+                           xanchor='left', yanchor='bottom', xshift=3)
     for i, ttl in ((1, 'RR'), (2, 'RR сглаж.')):
         suf = '' if i == 1 else str(i)
         fig.add_annotation(text='<b>' + ttl + '</b>',
