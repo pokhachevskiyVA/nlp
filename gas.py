@@ -876,20 +876,31 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     )
 
     # ---- Вторая ось абсцисс СВЕРХУ: % от МПК (VO2 в % от максимума) ----
-    # МПК = пик VO2 за тест. Тик-метки % ставим по времени, когда сглаженная
-    # VO2 достигает данного % от пика на ВОСХОДЯЩЕЙ ветви (фаза нагрузки),
-    # чтобы шкала совпадала со статьёй (ось х = % VO2max).
+    # МПК = пик VO2 за тест. Метку каждого % ставим по РЕАЛЬНОМУ пересечению
+    # восходящей кривой VO2 с уровнем pct%·МПК (с линейной интерполяцией по
+    # времени). Уровни НИЖЕ VO2 покоя не рисуем: в покое VO2 — это личный
+    # базовый уровень (~15-25% МПК), поэтому 0 с НЕ равно фиксированному %.
     try:
         vo2_ga = df['VO2_ga'].loc[2:].to_numpy(dtype=float)
-        vmax = float(np.nanmax(vo2_ga))
         pk_i = int(np.nanargmax(vo2_ga))
+        vmax = float(vo2_ga[pk_i])
+        seg, ts = vo2_ga[:pk_i + 1], times_sec[:pk_i + 1]
+        v_rest = float(np.nanmin(seg))                       # ~ уровень покоя
         tick_t, tick_txt = [], []
-        for pct in (20, 40, 60, 80, 100):
+        for pct in (10, 20, 30, 40, 50, 60, 70, 80, 90, 100):
             target = pct / 100.0 * vmax
-            hit = np.where(vo2_ga[:pk_i + 1] >= target)[0]
-            if len(hit):
-                tick_t.append(float(times_sec[hit[0]]))
-                tick_txt.append(f'{pct}%')
+            if pct == 100:
+                tick_t.append(float(ts[pk_i])); tick_txt.append('100%'); continue
+            if target <= v_rest:            # уровень ниже покоя — не показываем
+                continue
+            cross = None
+            for k in range(1, len(seg)):    # первое восходящее пересечение
+                if seg[k - 1] < target <= seg[k]:
+                    f = (target - seg[k - 1]) / (seg[k] - seg[k - 1] + 1e-9)
+                    cross = ts[k - 1] + f * (ts[k] - ts[k - 1])
+                    break
+            if cross is not None:
+                tick_t.append(float(cross)); tick_txt.append(f'{pct}%')
         x_lo, x_hi = float(np.nanmin(times_sec)), float(np.nanmax(times_sec))
         if tick_t:
             top_layout = {}
