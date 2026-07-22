@@ -862,12 +862,11 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
         plot_single(fig, row, col, df, period, colors[i])
         fig.update_xaxes(title_text='Время (сек)', row=row, col=col)
         suf = '' if i == 0 else str(i + 1)
-        # название панели — СВЕРХУ СЛЕВА (чтобы не сталкивалось с центральной
-        # подписью верхней оси «% от МПК»)
+        # название панели — СВЕРХУ ПО ЦЕНТРУ, выше верхней оси «% от МПК»
         fig.add_annotation(text='<b>' + period + '</b>',
                            xref='x' + suf + ' domain', yref='y' + suf + ' domain',
-                           x=0.0, y=1.22, showarrow=False,
-                           xanchor='left', yanchor='bottom',
+                           x=0.5, y=1.24, showarrow=False,
+                           xanchor='center', yanchor='bottom',
                            font=dict(size=13, color='#222'))
 
     fig.update_layout(
@@ -915,10 +914,16 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                           matches='x' + suf, tickmode='array',
                           tickvals=tick_t, ticktext=tick_txt, tickangle=0,
                           showgrid=False, ticks='outside',
-                          tickfont=dict(size=9, color='#555'),
-                          title=dict(text='% от МПК',        # подпись на КАЖДОМ
-                                     font=dict(size=9, color='#555')))
+                          tickfont=dict(size=9, color='#555'))
                 top_layout[topkey] = ax
+                # подпись оси — в ТУ ЖЕ СТРОКУ, что и проценты, справа (в зоне
+                # восстановления, где эта ось всё равно не считается)
+                fig.add_annotation(text='% от МПК',
+                                   xref='x' + suf + ' domain',
+                                   yref='y' + suf + ' domain',
+                                   x=1.0, y=1.06, showarrow=False,
+                                   xanchor='right', yanchor='bottom',
+                                   font=dict(size=9, color='#555'))
                 # служебный (невидимый) трейс, чтобы верхняя ось отрисовалась
                 fig.add_trace(go.Scatter(
                     x=[x_lo, x_hi], y=[np.nan, np.nan],
@@ -963,10 +968,11 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
             if not p:
                 continue
             add_vline_all(p[0], pt_colors[num], dash='dashdot', width=1.5)
+            # номер — чуть ПРАВЕЕ линии, чтобы не наезжал на неё
             fig.add_annotation(x=p[0], xref='x', yref='y domain', y=0.04,
                                text=str(num), showarrow=False,
                                font=dict(color=pt_colors[num], size=13),
-                               xanchor='center', yanchor='bottom')
+                               xanchor='left', yanchor='bottom', xshift=3)
 
     # ---- Запись HTML ----
     html_path = os.path.join(out_dir, f"gas_{name}.html")
