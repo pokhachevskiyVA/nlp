@@ -975,7 +975,7 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
 # ------------------------------------------------------------------ #
 def make(rr_path=None, gas_path=None, recovery_minutes=None,
          directory='.', out_dir='.', download=True, auto_detect=True,
-         show_candidates=False, recovery_auto=True):
+         show_candidates=False, recovery_auto=True, align_by_recovery=True):
     """Строит HTML с графиками газового анализа.
 
     Параметры (все необязательные — по умолчанию поведение как в Colab):
@@ -1024,12 +1024,36 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     df['VE'] = df['VE/VCO2'].iloc[2:] * df['VCO2'].iloc[2:]
 
     time_series = pd.Series(df_res['ОВР'])
-    cumulative_time = time_series.cumsum()
+    cumulative_time = time_series.cumsum()                 # мс, часы RR
 
-    target_times = pd.to_timedelta(df['t'].loc[2:].values).total_seconds() * 1000
+    target_times = pd.to_timedelta(df['t'].loc[2:].values).total_seconds() * 1000  # мс, часы газа
+
+    # --- Синхронизация RR и газа по точке ВОССТАНОВЛЕНИЯ ---
+    # Газоанализ пишется непрерывно (предстарт/старт/ручное переключение на
+    # кардио), а RR — строго по периодам, поэтому их шкалы сдвинуты. Совмещаем
+    # надир RR (перегиб на восстановление) с пиком VO2 (главный горб): сдвигаем
+    # часы RR на offset, чтобы эти моменты совпали. RR — приоритетная шкала.
+    offset_ms = 0.0
+    if align_by_recovery:
+        try:
+            gt = target_times / 1000.0
+            vo2s = smooth_curve(df['VO2'].loc[2:].astype(float).values, sigma=5)
+            gr = np.where((gt >= 0.30 * gt[-1]) & (gt <= 0.99 * gt[-1]))[0]
+            t_vo2peak = float(gt[gr[int(np.argmax(vo2s[gr]))]])
+            ct = cumulative_time.values / 1000.0
+            rrs = smooth_curve(time_series.values, sigma=5)
+            rr_ = np.where((ct >= 0.30 * ct[-1]) & (ct <= 0.99 * ct[-1]))[0]
+            t_rrnadir = float(ct[rr_[int(np.argmin(rrs[rr_]))]])
+            offset_ms = (t_vo2peak - t_rrnadir) * 1000.0
+            print(f'Синхронизация RR↔газ по восстановлению: сдвиг RR на '
+                  f'{offset_ms / 1000:.0f} с (пик VO2 {t_vo2peak:.0f} с, '
+                  f'надир RR {t_rrnadir:.0f} с)')
+        except Exception:
+            offset_ms = 0.0
+
     closest_indices = []
     for target in target_times:
-        closest_indices.append((cumulative_time - target).abs().idxmin())
+        closest_indices.append((cumulative_time - (target - offset_ms)).abs().idxmin())
     selected_elements = time_series.iloc[closest_indices]
 
     ser = selected_elements.reset_index(drop=True)
@@ -1043,7 +1067,7 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                      * df['RR'].iloc[2:].astype(float) / 60000.0)
 
     # ---- Сглаживание показателей (Хампель + гаусс, σ=4) ----
-    list_periods = ['VO2', 'VCO2', 'RER', 'VE', 'VE/VCO2', 'RR', 'O2pulse']
+    list_periods = ['VO2', 'VCO2', 'RER', 'VE', 'VE/VO2', 'VE/VCO2', 'RR', 'O2pulse']
     for period in list_periods:
         arr = smooth_curve(df[period].iloc[2:].astype(float), sigma=5)
         arr_with_nan = np.insert(arr, 0, [np.nan, np.nan])
@@ -1172,9 +1196,9 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
             hoverinfo='text'
         ), row=row, col=col)
 
-    list_periods_all = ['VO2', 'VCO2', 'RER', 'VE', 'VE/VCO2', 'RR', 'O2pulse']
+    list_periods_all = ['VO2', 'VCO2', 'RER', 'VE', 'VE/VO2', 'VE/VCO2', 'RR', 'O2pulse']
     list_periods_all += [x + '_ga' for x in list_periods_all]
-    colors = ['blue', 'orange', 'green', 'red', 'purple', 'green', 'teal']
+    colors = ['blue', 'orange', 'green', 'red', '#8c564b', 'purple', 'green', 'teal']
     colors += colors
     count_graphs = len(list_periods_all)
     n_rows = (count_graphs + 1) // 2
