@@ -1079,6 +1079,13 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
 
     # ---- Временной ряд по оси X (секунды) ----
     times_sec = pd.to_timedelta(df['t'].loc[2:]).dt.total_seconds().values
+    # в газовом файле бывает несколько вдохов в одну секунду -> дубли времени.
+    # Делаем шкалу строго возрастающей, иначе np.gradient делит на ноль (dt=0)
+    # и сыплет RuntimeWarning «divide by zero».
+    times_sec = np.asarray(times_sec, dtype=float).copy()
+    for _i in range(1, len(times_sec)):
+        if times_sec[_i] <= times_sec[_i - 1]:
+            times_sec[_i] = times_sec[_i - 1] + 1e-3
 
     # ================================================================ #
     #  ЗАДАЧА 1: минуты восстановления с клавиатуры
