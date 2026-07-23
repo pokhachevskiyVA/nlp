@@ -979,7 +979,7 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
 def make(rr_path=None, gas_path=None, recovery_minutes=None,
          directory='.', out_dir='.', download=True, auto_detect=True,
          show_candidates=False, recovery_auto=True, align_by_recovery=True,
-         prestart_s=30.0, start_s=30.0):
+         prestart_s=None, start_s=None):
     """Строит HTML с графиками газового анализа.
 
     Параметры (все необязательные — по умолчанию поведение как в Colab):
@@ -1168,6 +1168,20 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     # задаются суммарно через pause_s). Переносим на шкалу газа найденным
     # сдвигом синхронизации (offset). Всё левее — предстарт/старт, в анализ
     # нагрузки и в проценты не входит.
+    # длительности предстарта/старта: если не заданы явно — спрашиваем с
+    # клавиатуры (Enter = 30 с; у лыжников 30+30, у других можно свои).
+    def _ask(name, default=30.0):
+        try:
+            raw = input(f'Длительность {name}, с (Enter = {default:.0f}): ')
+            raw = raw.strip().replace(',', '.')
+            return float(raw) if raw else default
+        except (ValueError, EOFError):
+            return default
+    if prestart_s is None:
+        prestart_s = _ask('ПРЕДСТАРТА')
+    if start_s is None:
+        start_s = _ask('СТАРТА')
+
     preload = float(prestart_s) + float(start_s)
     load_start = 0.0
     try:
