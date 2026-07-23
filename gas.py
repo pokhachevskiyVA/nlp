@@ -1374,10 +1374,12 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                 continue
             add_vline_all(p[0], pt_colors[num], dash='dashdot', width=1.5)
             ypos = 0.16 + 0.12 * (rank[num] % 2)   # два чередующихся уровня
+            # подпись слева от своей линии, чтобы «4» не подлезала под чёрную
+            # линию восстановления (она правее точки 4)
             fig.add_annotation(x=p[0], xref='x', yref='y domain', y=ypos,
                                text=str(num), showarrow=False,
                                font=dict(color=pt_colors[num], size=13),
-                               xanchor='left', yanchor='bottom', xshift=3)
+                               xanchor='right', yanchor='bottom', xshift=-4)
 
     # ---- Запись HTML ----
     html_path = os.path.join(out_dir, f"gas_{name}.html")
