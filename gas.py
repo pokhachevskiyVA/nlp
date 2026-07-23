@@ -1346,7 +1346,8 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     # в анализ нагрузки и в проценты не входит.
     if load_start and load_start > times_sec.min() + 1:
         add_vline_all(load_start, 'black', dash='solid', width=2)
-        fig.add_annotation(x=load_start, xref='x', yref='y domain', y=0.04,
+        # подпись выше (в начале нагрузки VO2 низкая — не наезжаем на кривую)
+        fig.add_annotation(x=load_start, xref='x', yref='y domain', y=0.45,
                            text='начало нагрузки →', showarrow=False,
                            font=dict(color='black', size=11),
                            xanchor='right', yanchor='bottom', xshift=-4)
