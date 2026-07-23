@@ -540,7 +540,7 @@ def _cluster_times(cands, tol):
     return clusters
 
 
-def detect_points(df, times, rec_start, return_details=False):
+def detect_points(df, times, rec_start, return_details=False, load_start=0.0):
     """v2: авто-поиск точек 1-4 через изломы кривых и их кластеризацию.
 
     Идея: перелом одной физиологической точки проявляется на нескольких
@@ -554,7 +554,10 @@ def detect_points(df, times, rec_start, return_details=False):
     и отображения «лишних» точек-кандидатов).
     """
     times = np.asarray(times, float)
-    ex = times < rec_start
+    # зона нагрузки = [начало нагрузки … начало восстановления]
+    ex = (times >= load_start) & (times < rec_start)
+    if ex.sum() < 12:
+        ex = times < rec_start
     if ex.sum() < 12:
         ex = np.ones_like(times, dtype=bool)
     te = times[ex]
@@ -975,7 +978,8 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
 # ------------------------------------------------------------------ #
 def make(rr_path=None, gas_path=None, recovery_minutes=None,
          directory='.', out_dir='.', download=True, auto_detect=True,
-         show_candidates=False, recovery_auto=True, align_by_recovery=True):
+         show_candidates=False, recovery_auto=True, align_by_recovery=True,
+         prestart_s=30.0, start_s=30.0):
     """Строит HTML с графиками газового анализа.
 
     Параметры (все необязательные — по умолчанию поведение как в Colab):
@@ -1151,6 +1155,21 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
           f'восстановление {recovery_minutes} мин -> '
           f'начало восстановления на {rec_start:.0f} с')
 
+    # ---- НАЧАЛО НАГРУЗКИ (вторая опорная точка) ----
+    # RR-запись строгая: предстарт -> старт -> нагрузка -> восстановление.
+    # Начало нагрузки на шкале RR = предстарт + старт; переносим на шкалу газа
+    # уже найденным сдвигом синхронизации (offset). Всё до него (хвост газа +
+    # предстарт + старт) в анализ нагрузки не входит.
+    load_start = 0.0
+    try:
+        ls = offset_ms / 1000.0 + float(prestart_s) + float(start_s)
+        load_start = float(min(max(ls, 0.0), rec_start - 60.0))
+        print(f'Начало нагрузки: предстарт {prestart_s:.0f} + старт {start_s:.0f} с '
+              f'(по RR) -> {load_start:.0f} с на шкале газа. '
+              f'Окно нагрузки: {load_start:.0f}–{rec_start:.0f} с')
+    except Exception:
+        load_start = 0.0
+
     # ================================================================ #
     #  ЗАДАЧА 4 (черновик): авто-поиск точек 1-4
     # ================================================================ #
@@ -1159,7 +1178,8 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     if auto_detect:
         try:
             points = detect_points(df, times_sec, rec_start,
-                                   return_details=show_candidates)
+                                   return_details=show_candidates,
+                                   load_start=load_start)
             candidates = points.get('candidates', []) if show_candidates else []
             print('Авто-подсказки точек (проверьте глазами):')
             for num in (1, 2, 3, 4):
@@ -1294,13 +1314,20 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
 
     # Задача 2: линия начала восстановления (чёрная, сплошная)
     add_vline_all(rec_start, 'black', dash='solid', width=2)
-    # подпись выносим ВПРАВО от линии (в пустую зону восстановления),
-    # чтобы она не наезжала на номера точек 1-4 слева
     # подписи выносим ВНИЗ подграфика (у верхнего края теперь ось «% от МПК»)
     fig.add_annotation(x=rec_start, xref='x', yref='y domain', y=0.04,
                        text='← начало восстановления', showarrow=False,
                        font=dict(color='black', size=11),
                        xanchor='left', yanchor='bottom', xshift=4)
+
+    # Линия НАЧАЛА НАГРУЗКИ (чёрная, сплошная): всё левее — предстарт/старт,
+    # в анализ нагрузки и в проценты не входит.
+    if load_start and load_start > times_sec.min() + 1:
+        add_vline_all(load_start, 'black', dash='solid', width=2)
+        fig.add_annotation(x=load_start, xref='x', yref='y domain', y=0.04,
+                           text='начало нагрузки →', showarrow=False,
+                           font=dict(color='black', size=11),
+                           xanchor='right', yanchor='bottom', xshift=-4)
 
     # Доп. кандидаты (серые тонкие линии) — рисуем ПОД основными точками
     pt_times = {points[n][0] for n in (1, 2, 3, 4)
