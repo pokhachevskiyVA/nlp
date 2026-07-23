@@ -1197,9 +1197,11 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     candidates = []
     if auto_detect:
         try:
+            # Точки ищем на ПОЛНОМ окне до восстановления (как в проверенной
+            # версии) — сужение под «начало нагрузки» смещало точки 2/3.
+            # load_start используем только для линии-ориентира на графике.
             points = detect_points(df, times_sec, rec_start,
-                                   return_details=show_candidates,
-                                   load_start=load_start)
+                                   return_details=show_candidates)
             candidates = points.get('candidates', []) if show_candidates else []
             print('Авто-подсказки точек (проверьте глазами):')
             for num in (1, 2, 3, 4):
