@@ -1156,17 +1156,37 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
           f'начало восстановления на {rec_start:.0f} с')
 
     # ---- НАЧАЛО НАГРУЗКИ (вторая опорная точка) ----
-    # RR-запись строгая: предстарт -> старт -> нагрузка -> восстановление.
-    # Начало нагрузки на шкале RR = предстарт + старт; переносим на шкалу газа
-    # уже найденным сдвигом синхронизации (offset). Всё до него (хвост газа +
-    # предстарт + старт) в анализ нагрузки не входит.
+    # RR-запись строгая: предстарт -> (пауза) -> старт -> (пауза) -> нагрузка.
+    # Начало нагрузки на шкале RR = предстарт + старт + паузы (паузы по ≤3-5 с,
+    # задаются суммарно через pause_s). Переносим на шкалу газа найденным
+    # сдвигом синхронизации (offset). Всё левее — предстарт/старт, в анализ
+    # нагрузки и в проценты не входит.
+    preload = float(prestart_s) + float(start_s)
     load_start = 0.0
     try:
-        ls = offset_ms / 1000.0 + float(prestart_s) + float(start_s)
-        load_start = float(min(max(ls, 0.0), rec_start - 60.0))
-        print(f'Начало нагрузки: предстарт {prestart_s:.0f} + старт {start_s:.0f} с '
-              f'(по RR) -> {load_start:.0f} с на шкале газа. '
-              f'Окно нагрузки: {load_start:.0f}–{rec_start:.0f} с')
+        est = offset_ms / 1000.0 + preload         # оценка по RR
+        load_start = float(min(max(est, 0.0), rec_start - 60.0))
+        # УТОЧНЕНИЕ (учёт операторской паузы ±несколько секунд, автоматически):
+        # подтягиваем к фактическому старту роста VO2 — точке максимального
+        # ускорения VO2 (перелом вверх) в окне ±W вокруг оценки. Окно узкое
+        # (масштаб операторской погрешности), чтобы не переопределять RR-оценку.
+        W = 10.0
+        vga = df['VO2_ga'].loc[2:].to_numpy(dtype=float)
+        m = (times_sec >= load_start - W) & (times_sec <= load_start + W) & np.isfinite(vga)
+        idx = np.where(m)[0]
+        if len(idx) >= 5:
+            best, bestk = int(idx[0]), -1e18
+            for i in idx:
+                lo, hi = max(0, i - 4), min(len(vga) - 1, i + 4)
+                if i - lo >= 2 and hi - i >= 2 and np.isfinite(vga[lo]) and np.isfinite(vga[hi]):
+                    sr = (vga[hi] - vga[i]) / (times_sec[hi] - times_sec[i] + 1e-9)
+                    sl = (vga[i] - vga[lo]) / (times_sec[i] - times_sec[lo] + 1e-9)
+                    if sr - sl > bestk:
+                        bestk, best = sr - sl, i
+            load_start = float(times_sec[best])
+        print(f'Начало нагрузки: оценка по RR (предстарт {prestart_s:.0f}+старт '
+              f'{start_s:.0f}) ≈ {est:.0f} с, уточнено по старту роста VO2 -> '
+              f'{load_start:.0f} с. Окно нагрузки: {load_start:.0f}–{rec_start:.0f} с')
     except Exception:
         load_start = 0.0
 
