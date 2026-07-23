@@ -1357,16 +1357,21 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
             if all(abs(ct - pt) > 8 for pt in pt_times):   # не дублируем точки 1-4
                 add_vline_all(ct, 'rgba(150,150,150,0.6)', dash='dot', width=1)
 
-    # Задача 4: авто-подсказки точек 1-4 (тонкие цветные линии + номера)
+    # Задача 4: авто-подсказки точек 1-4 (тонкие цветные линии + номера).
+    # Номера ставим ВЫШЕ подписей границ и чередуем по высоте (по порядку во
+    # времени), чтобы близкие точки не наезжали друг на друга.
     if auto_detect and points:
         pt_colors = {1: '#1f77b4', 2: '#9467bd', 3: '#d62728', 4: '#8c564b'}
+        found = sorted([n for n in (1, 2, 3, 4) if points.get(n)],
+                       key=lambda n: points[n][0])
+        rank = {n: i for i, n in enumerate(found)}
         for num in (1, 2, 3, 4):
             p = points.get(num)
             if not p:
                 continue
             add_vline_all(p[0], pt_colors[num], dash='dashdot', width=1.5)
-            # номер — чуть ПРАВЕЕ линии, чтобы не наезжал на неё
-            fig.add_annotation(x=p[0], xref='x', yref='y domain', y=0.04,
+            ypos = 0.16 + 0.12 * (rank[num] % 2)   # два чередующихся уровня
+            fig.add_annotation(x=p[0], xref='x', yref='y domain', y=ypos,
                                text=str(num), showarrow=False,
                                font=dict(color=pt_colors[num], size=13),
                                xanchor='left', yanchor='bottom', xshift=3)
