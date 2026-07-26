@@ -139,6 +139,56 @@ def _clean_rr(r, win=11):
     return s.rolling(win, center=True, min_periods=1).median().values
 
 
+def hr_sync_offset(times_sec, gas_hr, rr_intervals, max_shift=220):
+    """Синхронизация RR↔газ по ЧАСТОТЕ СЕРДЕЧНЫХ СОКРАЩЕНИЙ.
+
+    Газоанализатор пишет собственный пульс (столбец «ЧСС»), RR даёт свой
+    пульс ЧСС = 60000/RR. Это одна и та же физическая величина, снятая двумя
+    приборами. Совмещаем ВСЮ кривую пульса кросс-корреляцией (а не одну точку,
+    как надир/пик — тот цепляется за случайный артефакт), находим сдвиг RR
+    относительно газа. Значение корреляции = мера качества RR-файла.
+
+    Обе кривые ресемплятся на секундную сетку и сглаживаются; перебираем сдвиги
+    -max_shift..+max_shift c с шагом 2 c, берём максимум корреляции.
+
+    Возвращает (offset_s, corr): offset — на сколько секунд часы RR сдвинуть,
+    чтобы совпасть с газом (газ_время = RR_время + offset); corr — совпадение
+    пульсов (0..1). При нехватке данных — (None, None).
+    """
+    tg = np.asarray(times_sec, dtype=float)
+    hg = pd.Series(np.asarray(gas_hr, dtype=float))
+    if hg.notna().sum() < 20 or (hg > 0).sum() < 20:
+        return None, None
+    hg[hg <= 0] = np.nan
+    hg = hg.interpolate(limit_direction='both').values
+    r = np.asarray(rr_intervals, dtype=float)
+    r = r[np.isfinite(r)]
+    if len(r) < 20:
+        return None, None
+    rc = _clean_rr(r)
+    trr = np.cumsum(rc) / 1000.0
+    hrr = 60000.0 / rc
+    T = min(float(tg[-1]), float(trr[-1]))
+    if T < 120:
+        return None, None
+    grid = np.arange(0.0, T, 1.0)
+    g = gaussian_smoothing(np.interp(grid, tg, hg), 4)
+    rh = gaussian_smoothing(np.interp(grid, trr, hrr), 4)
+    best = (0.0, -2.0)
+    for sh in range(-int(max_shift), int(max_shift) + 1, 2):
+        if sh >= 0:
+            a = g[sh:]; c = rh[:len(a)]
+        else:
+            a = g[:sh]; c = rh[-sh:len(g)]
+        n = min(len(a), len(c))
+        if n < 60:
+            continue
+        cc = np.corrcoef(a[:n], c[:n])[0, 1]
+        if np.isfinite(cc) and cc > best[1]:
+            best = (float(sh), float(cc))
+    return best
+
+
 def detect_recovery_start_rr(rr_intervals, sigma=6, hold_s=15.0):
     """Начало восстановления по RR: момент, когда после нагрузки RR-интервалы
     НАЧИНАЮТ устойчиво расти («колено» кривой RR).
@@ -1043,28 +1093,53 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
 
     target_times = pd.to_timedelta(df['t'].loc[2:].values).total_seconds() * 1000  # мс, часы газа
 
-    # --- Синхронизация RR и газа по точке ВОССТАНОВЛЕНИЯ ---
+    # --- Синхронизация RR и газа ---
     # Газоанализ пишется непрерывно (предстарт/старт/ручное переключение на
-    # кардио), а RR — строго по периодам, поэтому их шкалы сдвинуты. Совмещаем
-    # надир RR (перегиб на восстановление) с пиком VO2 (главный горб): сдвигаем
-    # часы RR на offset, чтобы эти моменты совпали. RR — приоритетная шкала.
-    offset_ms = 0.0
+    # кардио), а RR — строго по периодам, поэтому их шкалы сдвинуты.
+    #
+    # ОСНОВНОЙ способ — по ПУЛЬСУ: в газовом файле есть свой столбец «ЧСС», а
+    # RR даёт ЧСС = 60000/RR. Это одна величина с двух приборов; совмещаем всю
+    # кривую пульса кросс-корреляцией (hr_sync_offset). Надёжно и даёт оценку
+    # качества RR-файла (корреляция). Если столбца ЧСС нет или пульсы плохо
+    # совпадают (корр < 0.6) — ЗАПАСНОЙ способ: надир RR ↔ пик VO2.
+    offset_ms = None
+    hr_corr = None
     if align_by_recovery:
-        try:
-            gt = target_times / 1000.0
-            vo2s = smooth_curve(df['VO2'].loc[2:].astype(float).values, sigma=5)
-            gr = np.where((gt >= 0.30 * gt[-1]) & (gt <= 0.99 * gt[-1]))[0]
-            t_vo2peak = float(gt[gr[int(np.argmax(vo2s[gr]))]])
-            ct = cumulative_time.values / 1000.0
-            rrs = smooth_curve(time_series.values, sigma=5)
-            rr_ = np.where((ct >= 0.30 * ct[-1]) & (ct <= 0.99 * ct[-1]))[0]
-            t_rrnadir = float(ct[rr_[int(np.argmin(rrs[rr_]))]])
-            offset_ms = (t_vo2peak - t_rrnadir) * 1000.0
-            print(f'Синхронизация RR↔газ по восстановлению: сдвиг RR на '
-                  f'{offset_ms / 1000:.0f} с (пик VO2 {t_vo2peak:.0f} с, '
-                  f'надир RR {t_rrnadir:.0f} с)')
-        except Exception:
-            offset_ms = 0.0
+        # 1) по пульсу (основной)
+        if 'ЧСС' in df.columns:
+            try:
+                off_s, cc = hr_sync_offset(target_times / 1000.0,
+                                           df['ЧСС'].loc[2:].values,
+                                           time_series.values)
+                if off_s is not None and cc is not None and cc >= 0.6:
+                    offset_ms = off_s * 1000.0
+                    hr_corr = cc
+                    print(f'Синхронизация RR↔газ по ЧСС: сдвиг RR '
+                          f'{off_s:+.0f} с (совпадение пульса {cc:.2f})')
+                elif cc is not None:
+                    print(f'ЧСС-синхронизация ненадёжна (корр {cc:.2f}) — '
+                          f'запас по восстановлению.')
+            except Exception:
+                pass
+        # 2) по восстановлению (запасной)
+        if offset_ms is None:
+            try:
+                gt = target_times / 1000.0
+                vo2s = smooth_curve(df['VO2'].loc[2:].astype(float).values, sigma=5)
+                gr = np.where((gt >= 0.30 * gt[-1]) & (gt <= 0.99 * gt[-1]))[0]
+                t_vo2peak = float(gt[gr[int(np.argmax(vo2s[gr]))]])
+                ct = cumulative_time.values / 1000.0
+                rrs = smooth_curve(time_series.values, sigma=5)
+                rr_ = np.where((ct >= 0.30 * ct[-1]) & (ct <= 0.99 * ct[-1]))[0]
+                t_rrnadir = float(ct[rr_[int(np.argmin(rrs[rr_]))]])
+                offset_ms = (t_vo2peak - t_rrnadir) * 1000.0
+                print(f'Синхронизация RR↔газ по восстановлению: сдвиг RR на '
+                      f'{offset_ms / 1000:.0f} с (пик VO2 {t_vo2peak:.0f} с, '
+                      f'надир RR {t_rrnadir:.0f} с)')
+            except Exception:
+                offset_ms = 0.0
+    if offset_ms is None:
+        offset_ms = 0.0
 
     closest_indices = []
     for target in target_times:
