@@ -149,11 +149,26 @@ def hr_sync_offset(times_sec, gas_hr, rr_intervals, max_shift=220):
     относительно газа. Значение корреляции = мера качества RR-файла.
 
     Обе кривые ресемплятся на секундную сетку и сглаживаются; перебираем сдвиги
-    -max_shift..+max_shift c с шагом 2 c, берём максимум корреляции.
+    -max_shift..+max_shift c с шагом 2 c.
+
+    ВАЖНО: сдвиг ищется по УСЕЧЁННОЙ (trimmed) корреляции — при вычислении на
+    каждом сдвиге отбрасываются 25% точек с наибольшим расхождением. Иначе
+    битый «хвост» RR (срыв электродов, всплески/провалы пульса) перетягивал бы
+    общую корреляцию и давал ошибочный сдвиг. Trimmed-корреляция цепляется за
+    надёжный участок (нагрузочный подъём пульса) и находит правильный сдвиг
+    даже на частично испорченных записях.
+
+    А как МЕТКУ КАЧЕСТВА возвращаем ОБЫЧНУЮ (полную) корреляцию на найденном
+    сдвиге: у чистых записей ≈0.9–1.0, у битых — низкая (хвост не совпадает).
+
+    Пульс из RR перед сопоставлением дополнительно чистится от артефактов
+    (физиологический диапазон 40–210 уд/мин, выбросы по MAD и по скачку
+    «удар-к-удару»), чтобы одиночные всплески не мешали.
 
     Возвращает (offset_s, corr): offset — на сколько секунд часы RR сдвинуть,
     чтобы совпасть с газом (газ_время = RR_время + offset); corr — совпадение
-    пульсов (0..1). При нехватке данных — (None, None).
+    пульсов (0..1, полная корреляция = качество). При нехватке данных или если
+    надёжный сдвиг не нашёлся — (None, None).
     """
     tg = np.asarray(times_sec, dtype=float)
     hg = pd.Series(np.asarray(gas_hr, dtype=float))
@@ -168,25 +183,49 @@ def hr_sync_offset(times_sec, gas_hr, rr_intervals, max_shift=220):
     rc = _clean_rr(r)
     trr = np.cumsum(rc) / 1000.0
     hrr = 60000.0 / rc
+    # чистка пульса из RR от артефактов (клип диапазона + MAD + скачок)
+    s = pd.Series(hrr, dtype=float)
+    s[(s < 40) | (s > 210)] = np.nan
+    med = s.rolling(9, center=True, min_periods=1).median()
+    resid = (s - med).abs()
+    mad = resid.rolling(15, center=True, min_periods=1).median() * 1.4826 + 1e-9
+    s[resid > 4 * mad] = np.nan
+    s[s.diff().abs() > 15] = np.nan
+    hrr = s.interpolate(limit_direction='both').values
     T = min(float(tg[-1]), float(trr[-1]))
     if T < 120:
         return None, None
     grid = np.arange(0.0, T, 1.0)
     g = gaussian_smoothing(np.interp(grid, tg, hg), 4)
     rh = gaussian_smoothing(np.interp(grid, trr, hrr), 4)
-    best = (0.0, -2.0)
-    for sh in range(-int(max_shift), int(max_shift) + 1, 2):
+
+    def _seg(sh):
         if sh >= 0:
             a = g[sh:]; c = rh[:len(a)]
         else:
             a = g[:sh]; c = rh[-sh:len(g)]
         n = min(len(a), len(c))
-        if n < 60:
+        return (a[:n], c[:n]) if n >= 60 else (None, None)
+
+    # 1) сдвиг — по усечённой корреляции (устойчиво к битому хвосту)
+    best_sh, best_tc = None, -2.0
+    for sh in range(-int(max_shift), int(max_shift) + 1, 2):
+        a, c = _seg(sh)
+        if a is None:
             continue
-        cc = np.corrcoef(a[:n], c[:n])[0, 1]
-        if np.isfinite(cc) and cc > best[1]:
-            best = (float(sh), float(cc))
-    return best
+        res = np.abs((a - a.mean()) - (c - c.mean()))
+        keep = res <= np.quantile(res, 0.75)
+        if keep.sum() < 50:
+            continue
+        tc = np.corrcoef(a[keep], c[keep])[0, 1]
+        if np.isfinite(tc) and tc > best_tc:
+            best_tc, best_sh = tc, sh
+    if best_sh is None or best_tc < 0.9:
+        return None, None
+    # 2) качество — обычная корреляция на найденном сдвиге
+    a, c = _seg(best_sh)
+    q = float(np.corrcoef(a, c)[0, 1]) if a is not None else None
+    return float(best_sh), q
 
 
 def detect_recovery_start_rr(rr_intervals, sigma=6, hold_s=15.0):
@@ -1040,8 +1079,11 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
 def make(rr_path=None, gas_path=None, recovery_minutes=None,
          directory='.', out_dir='.', download=True, auto_detect=True,
          show_candidates=False, recovery_auto=True, align_by_recovery=True,
-         prestart_s=None, start_s=None, rcp_mode='article'):
+         prestart_s=None, start_s=None, rcp_mode='article', report_only=False):
     """Строит HTML с графиками газового анализа.
+
+    report_only=True — не строить HTML (долго), только посчитать синхронизацию,
+    восстановление, окно нагрузки и точки; вернуть словарь с результатами.
 
     Параметры (все необязательные — по умолчанию поведение как в Colab):
       rr_path, gas_path   — пути к .rr и .xlsx; если None, берётся последний
@@ -1098,10 +1140,11 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     # кардио), а RR — строго по периодам, поэтому их шкалы сдвинуты.
     #
     # ОСНОВНОЙ способ — по ПУЛЬСУ: в газовом файле есть свой столбец «ЧСС», а
-    # RR даёт ЧСС = 60000/RR. Это одна величина с двух приборов; совмещаем всю
-    # кривую пульса кросс-корреляцией (hr_sync_offset). Надёжно и даёт оценку
-    # качества RR-файла (корреляция). Если столбца ЧСС нет или пульсы плохо
-    # совпадают (корр < 0.6) — ЗАПАСНОЙ способ: надир RR ↔ пик VO2.
+    # RR даёт ЧСС = 60000/RR. Это одна величина с двух приборов; совмещаем
+    # кривую пульса устойчивой (усечённой) кросс-корреляцией (hr_sync_offset).
+    # Сдвиг надёжен даже на частично битых RR (цепляется за нагрузочный подъём),
+    # а полная корреляция = оценка качества RR-файла. Если столбца ЧСС нет или
+    # надёжный сдвиг не нашёлся — ЗАПАСНОЙ способ: надир RR ↔ пик VO2.
     offset_ms = None
     hr_corr = None
     if align_by_recovery:
@@ -1111,14 +1154,14 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                 off_s, cc = hr_sync_offset(target_times / 1000.0,
                                            df['ЧСС'].loc[2:].values,
                                            time_series.values)
-                if off_s is not None and cc is not None and cc >= 0.6:
+                if off_s is not None:
                     offset_ms = off_s * 1000.0
                     hr_corr = cc
+                    q = f'{cc:.2f}' if cc is not None else '—'
+                    warn = (' — НИЗКОЕ, RR-файл проверить (сдвиг взят по '
+                            'надёжному участку)') if (cc is not None and cc < 0.85) else ''
                     print(f'Синхронизация RR↔газ по ЧСС: сдвиг RR '
-                          f'{off_s:+.0f} с (совпадение пульса {cc:.2f})')
-                elif cc is not None:
-                    print(f'ЧСС-синхронизация ненадёжна (корр {cc:.2f}) — '
-                          f'запас по восстановлению.')
+                          f'{off_s:+.0f} с (совпадение пульса {q}{warn})')
             except Exception:
                 pass
         # 2) по восстановлению (запасной)
@@ -1322,13 +1365,33 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
             print(f'Авто-поиск точек не выполнен: {e}')
             points = {}
 
-    # ================================================================ #
-    #  Построение графиков
-    # ================================================================ #
-    # % от МПК для подсказки: VO2(t) / пик VO2 * 100 (по сглаженной кривой)
+    # % от МПК: VO2(t) / пик VO2 * 100 (по сглаженной кривой)
     _vo2ga = df['VO2_ga'].loc[2:].astype(float)
     _vmax = float(np.nanmax(_vo2ga.values)) if len(_vo2ga) else np.nan
     df['pctVO2max'] = _vo2ga / _vmax * 100.0 if _vmax and _vmax == _vmax else np.nan
+
+    # ---- report_only: вернуть результаты без построения HTML ----
+    if report_only:
+        def _pct_at(t):
+            try:
+                i = int(np.argmin(np.abs(times_sec - t)))
+                return float(df['pctVO2max'].loc[2:].to_numpy()[i])
+            except Exception:
+                return float('nan')
+        res = {'name': name, 'offset_s': offset_ms / 1000.0, 'hr_corr': hr_corr,
+               'rec_start': rec_start, 'load_start': load_start,
+               'recovery_min': recovery_minutes, 't_end': t_end}
+        for num in (1, 2, 3, 4):
+            p = points.get(num)
+            if p:
+                res[f't{num}'] = float(p[0]); res[f'pct{num}'] = _pct_at(p[0])
+            else:
+                res[f't{num}'] = None; res[f'pct{num}'] = None
+        return res
+
+    # ================================================================ #
+    #  Построение графиков
+    # ================================================================ #
 
     def plot_single(fig, row, col, df, period, color):
         tt = pd.to_timedelta(df['t'].loc[2:]).dt.total_seconds()
@@ -1489,10 +1552,50 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                                font=dict(color=pt_colors[num], size=13),
                                xanchor='right', yanchor='bottom', xshift=-4)
 
+    # ---- Доп. панель: контроль синхронизации по пульсу ----
+    # Наложение пульса из газа (столбец ЧСС) и пульса из RR (60000/RR),
+    # сдвинутого на найденный offset. Совпадение кривых = проверка качества
+    # RR-файла и корректности синхронизации (см. заголовок — совпадение пульса).
+    hr_div = ''
+    if 'ЧСС' in df.columns:
+        try:
+            hgv = pd.to_numeric(df['ЧСС'].loc[2:], errors='coerce').values
+            rr_raw = np.asarray(df_res['ОВР'].values, dtype=float)
+            rr_raw = rr_raw[np.isfinite(rr_raw)]
+            rc = _clean_rr(rr_raw)
+            s = pd.Series(60000.0 / rc)
+            s[(s < 40) | (s > 210)] = np.nan
+            med = s.rolling(9, center=True, min_periods=1).median()
+            resid = (s - med).abs()
+            mad = resid.rolling(15, center=True, min_periods=1).median() * 1.4826 + 1e-9
+            s[resid > 4 * mad] = np.nan
+            s[s.diff().abs() > 15] = np.nan
+            hrr = s.interpolate(limit_direction='both').values
+            trr = np.cumsum(rc) / 1000.0 + offset_ms / 1000.0
+            hf = go.Figure()
+            hf.add_trace(go.Scatter(x=times_sec, y=hgv, mode='lines',
+                                    name='ЧСС из газа (пульсометр)',
+                                    line=dict(color='#1f5fa8', width=2)))
+            hf.add_trace(go.Scatter(x=trr, y=hrr, mode='lines',
+                                    name='ЧСС из RR (60000/RR)',
+                                    line=dict(color='#2ca02c', width=1)))
+            qtxt = f'{hr_corr:.2f}' if hr_corr is not None else '—'
+            note = '  (низкое — проверить RR-файл)' if (hr_corr is not None and hr_corr < 0.85) else ''
+            hf.update_layout(
+                title=f'Контроль синхронизации по пульсу — совпадение {qtxt}{note}',
+                xaxis_title='Время (сек)', yaxis_title='ЧСС, уд/мин',
+                height=360, margin=dict(t=50),
+                legend=dict(orientation='h', y=1.02, yanchor='bottom'))
+            hr_div = hf.to_html(full_html=False, include_plotlyjs=False)
+        except Exception:
+            hr_div = ''
+
     # ---- Запись HTML ----
     html_path = os.path.join(out_dir, f"gas_{name}.html")
     fig.write_html(html_path)
     with open(html_path, 'a', encoding='utf-8') as f:
+        if hr_div:
+            f.write(hr_div)
         f.write(CUSTOM_JS)
 
     # ---- Скачивание (только Colab) ----
