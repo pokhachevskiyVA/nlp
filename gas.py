@@ -632,28 +632,11 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0):
             cand = int(idx[int(np.argmin(yy))])
         return cand
 
-    # --- Точка 3 (RCP): начало устойчивого роста вентиляторного        ---
-    #     эквивалента VE/VCO2 (классический VT2).
-    t3 = None
-    try:
-        i3 = rise_onset(C['VE/VCO2'], te[0] + 0.30 * dur, te[0] + 0.97 * dur)
-        if i3 is not None:
-            t3 = te[i3]
-            s = support_at(t3, ['VE/VCO2', 'VE', 'RER'], +1)
-            res[3] = (t3, val_at('VE/VCO2', t3),
-                      'RCP (респир. компенсация); кривых: %d' % max(s, 1))
-    except Exception:
-        pass
-    if res[3] is None and v1[3] is not None:
-        res[3], t3 = v1[3], v1[3][0]
-
     # --- Точка 1 (лактатный/аэробный порог, VT1): минимум VE/VO2, ---
     #     когда вентиляция по O2 начинает расти (VE/VCO2 ещё стабилен).
     t1 = None
     try:
-        upper = (t3 - 2 * tol) if t3 is not None else te[0] + 0.7 * dur
-        upper = max(upper, te[0] + 0.25 * dur)
-        i1 = argmin_in(C['VE/VO2'], te[0] + 0.08 * dur, upper)
+        i1 = argmin_in(C['VE/VO2'], te[0] + 0.08 * dur, te[0] + 0.70 * dur)
         if i1 is not None:
             t1 = te[i1]
             s = support_at(t1, ['RER', 'VCO2', 'VE'], +1)   # изломы по статье
@@ -664,9 +647,62 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0):
     if res[1] is None and v1[1] is not None:
         res[1], t1 = v1[1], v1[1][0]
 
+    # --- Точка 4 (аэробный лимит): НАЧАЛО плато VO2 (апогей). ---
+    lo4 = te[0] + 0.55 * dur
+    t4 = None
+    try:
+        vo2s = np.asarray(C['VO2'], dtype=float)
+        sub = np.where(te > lo4)[0]
+        if len(sub) >= 2:
+            i0 = int(sub[0])
+            i_pk = i0 + int(np.argmax(vo2s[i0:]))     # пик VO2 (апогей)
+            v0, vpk = float(vo2s[i0]), float(vo2s[i_pk])
+            target = v0 + 0.95 * (vpk - v0)           # 95% пути к пику
+            t4 = float(te[i_pk])
+            for k in range(i0, i_pk + 1):
+                if vo2s[k] >= target:
+                    t4 = float(te[k])
+                    break
+    except Exception:
+        t4 = None
+    if t4 is not None:
+        res[4] = (t4, val_at('VO2', t4), 'Аэробный лимит (начало плато VO2)')
+    elif v1[4] is not None:
+        res[4] = v1[4]
+        t4 = v1[4][0]
+
+    # --- Точка 3 (RCP): ПОСЛЕДНИЙ перелом ВВЕРХ VE/VCO2 перед плато VO2 ---
+    #     (по замечанию А.В. Похачевского RCP наступает за ~10-20 с до плато
+    #     VO2). Берём максимальный по силе излом вверх VE/VCO2 в окне
+    #     [0.40*нагрузки .. t4]. Это заметно ближе к точке 4, чем прежнее
+    #     «начало роста VE/VCO2».
+    t3 = None
+    try:
+        hi3 = t4 if t4 is not None else te[0] + 0.95 * dur
+        ks = _kink_strength(te, np.asarray(C['VE/VCO2'], float), win)
+        m3 = (te > te[0] + 0.40 * dur) & (te < hi3)
+        if m3.sum() > 3:
+            idxm = np.where(m3)[0]
+            i3 = int(idxm[int(np.argmax(ks[idxm]))])
+            t3 = float(te[i3])
+            s = support_at(t3, ['VE/VCO2', 'VE', 'RER'], +1)
+            res[3] = (t3, val_at('VE/VCO2', t3),
+                      'RCP (респир. компенсация); кривых: %d' % max(s, 1))
+    except Exception:
+        pass
+    if res[3] is None:                                # запас: старое определение
+        try:
+            i3 = rise_onset(C['VE/VCO2'], te[0] + 0.30 * dur, te[0] + 0.97 * dur)
+            if i3 is not None:
+                t3 = te[i3]
+                res[3] = (t3, val_at('VE/VCO2', t3), 'RCP (респир. компенсация)')
+        except Exception:
+            pass
+    if res[3] is None and v1[3] is not None:
+        res[3], t3 = v1[3], v1[3][0]
+
     # --- Точка 2 (ацидотический pH-порог): кластеризация изломов ВВЕРХ ---
-    #     кривых VCO2 и VE строго между точкой 1 и RCP (самое сложное место,
-    #     здесь идея кластеризации по кривым работает лучше всего).
+    #     кривых VCO2 и VE строго между точкой 1 и RCP.
     lo2 = (t1 + 0.5 * tol) if t1 is not None else te[0] + 0.3 * dur
     hi2 = (t3 - 0.3 * tol) if t3 is not None else te[0] + 0.85 * dur
     cands = []
@@ -682,41 +718,11 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0):
     clusters = _cluster_times(cands, tol)
     cons = [cl for cl in clusters if ({'VCO2', 'VE'} & cl['curves'])]
     if cons:
-        # самый выраженный консенсус-перелом между порогами
         c2 = max(cons, key=lambda cl: (cl['support'], cl['strength']))
         res[2] = (c2['t'], val_at('VCO2', c2['t']),
                   'Ацидотический (pH) порог; кривых: %d' % c2['support'])
     elif v1[2] is not None and hi2 > v1[2][0] > lo2:
         res[2] = v1[2]
-
-    # --- Точка 4 (аэробный лимит): НАЧАЛО плато VO2 — момент, когда VO2 ---
-    #     перестаёт расти (апогей аэробного метаболизма). Это РАННИЙ край
-    #     плато; начало восстановления (спад VO2) — поздний край, поэтому
-    #     точка 4 всегда строго ВНУТРИ нагрузки и раньше восстановления.
-    lo4 = max(te[0] + 0.55 * dur, (t3 if t3 is not None else te[0]))
-    t4 = None
-    try:
-        vo2s = np.asarray(C['VO2'], dtype=float)
-        sub = np.where(te > lo4)[0]
-        if len(sub) >= 2:
-            i0 = int(sub[0])
-            i_pk = i0 + int(np.argmax(vo2s[i0:]))     # пик VO2 (апогей)
-            v0, vpk = float(vo2s[i0]), float(vo2s[i_pk])
-            # аэробный лимит = момент, когда VO2 прошёл 95% пути к пику
-            # (подход к апогею). Для плато — начало плато, для крутого роста —
-            # чуть раньше пика: всегда строго ВНУТРИ нагрузки, до восстановления.
-            target = v0 + 0.95 * (vpk - v0)
-            t4 = float(te[i_pk])
-            for k in range(i0, i_pk + 1):
-                if vo2s[k] >= target:
-                    t4 = float(te[k])
-                    break
-    except Exception:
-        t4 = None
-    if t4 is not None:
-        res[4] = (t4, val_at('VO2', t4), 'Аэробный лимит (начало плато VO2)')
-    elif v1[4] is not None and (t3 is None or v1[4][0] > t3):
-        res[4] = v1[4]
 
     if return_details:
         # Глобальные консенсус-кандидаты (изломы, подтверждённые >=2 кривыми)
