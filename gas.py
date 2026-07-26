@@ -540,7 +540,8 @@ def _cluster_times(cands, tol):
     return clusters
 
 
-def detect_points(df, times, rec_start, return_details=False, load_start=0.0):
+def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
+                  rcp_mode='article'):
     """v2: авто-поиск точек 1-4 через изломы кривых и их кластеризацию.
 
     Идея: перелом одной физиологической точки проявляется на нескольких
@@ -671,31 +672,35 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0):
         res[4] = v1[4]
         t4 = v1[4][0]
 
-    # --- Точка 3 (RCP): ПОСЛЕДНИЙ перелом ВВЕРХ VE/VCO2 перед плато VO2 ---
-    #     (по замечанию А.В. Похачевского RCP наступает за ~10-20 с до плато
-    #     VO2). Берём максимальный по силе излом вверх VE/VCO2 в окне
-    #     [0.40*нагрузки .. t4]. Это заметно ближе к точке 4, чем прежнее
-    #     «начало роста VE/VCO2».
+    # --- Точка 3 (RCP): два определения (выбирается rcp_mode) ---
+    #   'article'  — как в статье Лелявиной (рис. 3): НАЧАЛО подъёма VE/VCO2
+    #                (VT2), заметно раньше плато VO2 (~75% МПК). ПО УМОЛЧАНИЮ.
+    #   'plateau'  — по замечанию А.В. Похачевского: ПОСЛЕДНИЙ перелом вверх
+    #                VE/VCO2 за ~10-20 с до плато VO2 (близко к точке 4, ~96%).
     t3 = None
-    try:
-        hi3 = t4 if t4 is not None else te[0] + 0.95 * dur
-        ks = _kink_strength(te, np.asarray(C['VE/VCO2'], float), win)
-        m3 = (te > te[0] + 0.40 * dur) & (te < hi3)
-        if m3.sum() > 3:
-            idxm = np.where(m3)[0]
-            i3 = int(idxm[int(np.argmax(ks[idxm]))])
-            t3 = float(te[i3])
-            s = support_at(t3, ['VE/VCO2', 'VE', 'RER'], +1)
-            res[3] = (t3, val_at('VE/VCO2', t3),
-                      'RCP (респир. компенсация); кривых: %d' % max(s, 1))
-    except Exception:
-        pass
-    if res[3] is None:                                # запас: старое определение
+    if rcp_mode == 'plateau':
         try:
-            i3 = rise_onset(C['VE/VCO2'], te[0] + 0.30 * dur, te[0] + 0.97 * dur)
+            hi3 = t4 if t4 is not None else te[0] + 0.95 * dur
+            ks = _kink_strength(te, np.asarray(C['VE/VCO2'], float), win)
+            m3 = (te > te[0] + 0.40 * dur) & (te < hi3)
+            if m3.sum() > 3:
+                idxm = np.where(m3)[0]
+                i3 = int(idxm[int(np.argmax(ks[idxm]))])
+                t3 = float(te[i3])
+                s = support_at(t3, ['VE/VCO2', 'VE', 'RER'], +1)
+                res[3] = (t3, val_at('VE/VCO2', t3),
+                          'RCP (посл. перелом VE/VCO2); кривых: %d' % max(s, 1))
+        except Exception:
+            pass
+    else:                                              # 'article' (по умолчанию)
+        try:
+            hi = (t4 - tol) if t4 is not None else te[0] + 0.97 * dur
+            i3 = rise_onset(C['VE/VCO2'], te[0] + 0.30 * dur, max(hi, te[0] + 0.5 * dur))
             if i3 is not None:
                 t3 = te[i3]
-                res[3] = (t3, val_at('VE/VCO2', t3), 'RCP (респир. компенсация)')
+                s = support_at(t3, ['VE/VCO2', 'VE', 'RER'], +1)
+                res[3] = (t3, val_at('VE/VCO2', t3),
+                          'RCP (начало роста VE/VCO2); кривых: %d' % max(s, 1))
         except Exception:
             pass
     if res[3] is None and v1[3] is not None:
@@ -985,7 +990,7 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
 def make(rr_path=None, gas_path=None, recovery_minutes=None,
          directory='.', out_dir='.', download=True, auto_detect=True,
          show_candidates=False, recovery_auto=True, align_by_recovery=True,
-         prestart_s=None, start_s=None):
+         prestart_s=None, start_s=None, rcp_mode='article'):
     """Строит HTML с графиками газового анализа.
 
     Параметры (все необязательные — по умолчанию поведение как в Colab):
@@ -1228,7 +1233,8 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
             # версии) — сужение под «начало нагрузки» смещало точки 2/3.
             # load_start используем только для линии-ориентира на графике.
             points = detect_points(df, times_sec, rec_start,
-                                   return_details=show_candidates)
+                                   return_details=show_candidates,
+                                   rcp_mode=rcp_mode)
             candidates = points.get('candidates', []) if show_candidates else []
             print('Авто-подсказки точек (проверьте глазами):')
             for num in (1, 2, 3, 4):
