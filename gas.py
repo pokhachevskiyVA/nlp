@@ -630,7 +630,7 @@ def _cluster_times(cands, tol):
 
 
 def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
-                  rcp_mode='article'):
+                  rcp_mode='article', load_hint=None):
     """v2: авто-поиск точек 1-4 через изломы кривых и их кластеризацию.
 
     Идея: перелом одной физиологической точки проявляется на нескольких
@@ -722,18 +722,51 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
             cand = int(idx[int(np.argmin(yy))])
         return cand
 
-    # --- Точка 1 (лактатный/аэробный порог, VT1): минимум VE/VO2, ---
-    #     когда вентиляция по O2 начинает расти (VE/VCO2 ещё стабилен).
+    # --- Точка 1 (лактатный порог) — ПО МЕТОДУ ЛЕЛЯВИНОЙ: ---
+    #     перелом (излом вверх) кривых RER, VCO2, VE. Момент включения
+    #     анаэробного метаболизма: RER, VCO2 и VE одновременно дают загиб
+    #     вверх. Берём САМЫЙ РАННИЙ кластер изломов, подтверждённый ≥2 из
+    #     этих трёх кривых (консенсус). Это заменяет прежний критерий
+    #     (минимум VE/VO2), чтобы определение совпадало со статьёй Лелявиной
+    #     (Рос. кардиол. журн. 2014;11:19–24: «точка 1 — переломы RER, VCO2, VE»).
     t1 = None
     try:
-        i1 = argmin_in(C['VE/VO2'], te[0] + 0.08 * dur, te[0] + 0.70 * dur)
-        if i1 is not None:
-            t1 = te[i1]
-            s = support_at(t1, ['RER', 'VCO2', 'VE'], +1)   # изломы по статье
+        # БЕЗ окна поиска: перелом ищем по всей преднагрузочной части
+        # (te[0]…te[-1], восстановление уже исключено). Точка 1 может попасть и
+        # на разминку/старт — это допустимо (так решили с экспертом).
+        lo_t = te[0]
+        hi_t = te[-1]
+        cands1 = []
+        for nm in ['RER', 'VCO2', 'VE']:
+            if C.get(nm) is None:
+                continue
+            for (tk, st) in _kink_peaks(te, C[nm], win, +1, ntop=4):
+                if lo_t <= tk <= hi_t:
+                    cands1.append((tk, st, nm))
+        clusters1 = _cluster_times(cands1, tol)
+        consensus = [cl for cl in clusters1 if cl['support'] >= 2]
+        if consensus:
+            cl = min(consensus, key=lambda c: c['t'])   # самый ранний консенсус
+            t1 = float(cl['t'])
             res[1] = (t1, val_at('VE/VO2', t1),
-                      'Лактатный/аэробный порог; кривых: %d' % s)
+                      'Лактатный порог (перелом RER/VCO2/VE); кривых: %d' % cl['support'])
+        elif clusters1:                                  # нет консенсуса — сильнейший излом
+            cl = max(clusters1, key=lambda c: c['strength'])
+            t1 = float(cl['t'])
+            res[1] = (t1, val_at('VE/VO2', t1),
+                      'Лактатный порог (перелом RER/VCO2/VE); кривых: %d' % cl['support'])
     except Exception:
         pass
+    if res[1] is None:
+        # запас: минимум VE/VO2 (прежний критерий), затем v1
+        try:
+            i1 = argmin_in(C['VE/VO2'], te[0] + 0.08 * dur, te[0] + 0.70 * dur)
+            if i1 is not None:
+                t1 = te[i1]
+                res[1] = (t1, val_at('VE/VO2', t1),
+                          'Лактатный порог (запас: min VE/VO2)')
+        except Exception:
+            pass
     if res[1] is None and v1[1] is not None:
         res[1], t1 = v1[1], v1[1][0]
 
@@ -1250,21 +1283,41 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
             rr_min = round((t_rr[-1] - rr_on) / 60.0, 1)
         except Exception:
             rr_min = None
-        # ОСНОВНАЯ линия при наличии газа — по спаду VO2 (строго после пика):
-        # гарантирует, что 100% МПК и точка 4 остаются в нагрузке, а VO2/VE
-        # падают на восстановлении.
-        vo2_onset = None
+        # ОСНОВНАЯ линия при наличии газа — по спаду ВЕНТИЛЯЦИИ (VE), а НЕ VO2.
+        # VO2 часто выходит на плато ДО конца нагрузки (это и есть аэробный
+        # лимит = точка 4), поэтому его пик приходит рано и линия вставала
+        # раньше реального конца нагрузки. VE (как и VCO2, ЧСС, надир RR)
+        # достигает максимума именно в конце нагрузки и резко падает на
+        # восстановлении — совпадает с надиром RR (пиком ЧСС). Кросс-проверка
+        # по надиру RR (в газовой шкале, через ЧСС-сдвиг offset_ms).
+        rec_onset = None
         try:
-            vo2_onset = detect_recovery_start_vo2(times_sec, df['VO2'].loc[2:].values)
+            rec_onset = detect_recovery_start_vo2(times_sec, df['VE'].loc[2:].values)
         except Exception:
-            vo2_onset = None
+            rec_onset = None
+        # надир RR (пик ЧСС) в газовой шкале — независимая сверка/уточнение
+        rr_nadir_gas = None
+        try:
+            _rc = _clean_rr(np.asarray(df_res['ОВР'].values, dtype=float))
+            _trr = np.cumsum(_rc) / 1000.0 + offset_ms / 1000.0
+            _ys = smooth_curve(_rc)
+            _m = (_trr >= 0.30 * times_sec.max()) & (_trr <= 0.99 * times_sec.max())
+            if _m.sum() > 10:
+                rr_nadir_gas = float(_trr[_m][int(np.argmin(_ys[_m]))])
+        except Exception:
+            rr_nadir_gas = None
+        # если VE и надир RR близки — берём их среднее (устойчивее к шуму)
+        if rec_onset is not None and rr_nadir_gas is not None \
+                and abs(rec_onset - rr_nadir_gas) <= 25:
+            rec_onset = 0.5 * (rec_onset + rr_nadir_gas)
 
-        if vo2_onset is not None:
-            recovery_minutes = round((times_sec.max() - vo2_onset) / 60.0, 1)
+        if rec_onset is not None:
+            recovery_minutes = round((times_sec.max() - rec_onset) / 60.0, 1)
             r_txt = f'{rr_min} мин' if rr_min is not None else '—'
+            n_txt = f', надир RR {rr_nadir_gas:.0f}с' if rr_nadir_gas is not None else ''
             f_txt = f', Фаза {faza_min} мин' if faza_min is not None else ''
-            print(f'Авто: начало восстановления по спаду VO2 {vo2_onset:.0f}с '
-                  f'-> {recovery_minutes} мин. Сверка по RR: {r_txt}{f_txt}')
+            print(f'Авто: начало восстановления по спаду VE {rec_onset:.0f}с '
+                  f'-> {recovery_minutes} мин. Сверка: RR {r_txt}{n_txt}{f_txt}')
         elif rr_min is not None:                 # газа нет — по RR
             recovery_minutes = rr_min
             print(f'Газа нет; начало восстановления по RR: {recovery_minutes} мин')
@@ -1347,12 +1400,13 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     candidates = []
     if auto_detect:
         try:
-            # Точки ищем на ПОЛНОМ окне до восстановления (как в проверенной
+            # Точки 2-4 ищем на ПОЛНОМ окне до восстановления (как в проверенной
             # версии) — сужение под «начало нагрузки» смещало точки 2/3.
-            # load_start используем только для линии-ориентира на графике.
+            # load_hint нужен ТОЛЬКО для точки 1 (перелом RER/VCO2/VE по методу
+            # Лелявиной), чтобы не поймать перелом на старте нагрузки.
             points = detect_points(df, times_sec, rec_start,
                                    return_details=show_candidates,
-                                   rcp_mode=rcp_mode)
+                                   rcp_mode=rcp_mode, load_hint=load_start)
             candidates = points.get('candidates', []) if show_candidates else []
             print('Авто-подсказки точек (проверьте глазами):')
             for num in (1, 2, 3, 4):
@@ -1512,6 +1566,23 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                        text='← начало восстановления', showarrow=False,
                        font=dict(color='black', size=11),
                        xanchor='left', yanchor='bottom', xshift=4)
+
+    # Точка МАКСИМУМА RER на ВОССТАНОВЛЕНИИ (зелёная пунктирная).
+    # После нагрузки RER растёт (гипервентиляция вымывает CO2) и достигает
+    # пика уже в восстановлении — маркер выраженности постнагрузочного ацидоза.
+    try:
+        rer_rec = df['RER_ga'].loc[2:].to_numpy(dtype=float)
+        rec_mask = (times_sec > rec_start) & np.isfinite(rer_rec)
+        if rec_mask.sum() >= 3:
+            idx = np.where(rec_mask)[0]
+            t_rermax = float(times_sec[idx[int(np.argmax(rer_rec[idx]))]])
+            add_vline_all(t_rermax, '#2ca02c', dash='dot', width=1.5)
+            fig.add_annotation(x=t_rermax, xref='x', yref='y domain', y=0.30,
+                               text='max RER', showarrow=False,
+                               font=dict(color='#2ca02c', size=10),
+                               xanchor='left', yanchor='bottom', xshift=3)
+    except Exception:
+        pass
 
     # Линия НАЧАЛА НАГРУЗКИ (чёрная, сплошная): всё левее — предстарт/старт,
     # в анализ нагрузки и в проценты не входит.
