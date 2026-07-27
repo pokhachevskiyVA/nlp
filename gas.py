@@ -760,26 +760,30 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
     if res[1] is None and v1[1] is not None:
         res[1], t1 = v1[1], v1[1][0]
 
-    # --- Точка 4 (аэробный лимит): НАЧАЛО плато VO2 (апогей). ---
-    lo4 = te[0] + 0.55 * dur
+    # --- Точка 4 (аэробный лимит): НАЧАЛО ПЛАТО VO2 (метод касательной). ---
+    #     VO2 растёт ~линейно, затем выходит на плато. Точка 4 — начало плато:
+    #     первый момент, когда наклон VO2 падает ниже 30% от максимального
+    #     (в средней части нагрузки) И VO2 достиг ≥90% пика (ограничение по
+    #     эксперту). Это раньше прежнего «95% пути к пику» и даёт ~90-94% МПК
+    #     (близко к референсу 93%), а не почти-пик.
     t4 = None
     try:
         vo2s = np.asarray(C['VO2'], dtype=float)
-        sub = np.where(te > lo4)[0]
-        if len(sub) >= 2:
-            i0 = int(sub[0])
-            i_pk = i0 + int(np.argmax(vo2s[i0:]))     # пик VO2 (апогей)
-            v0, vpk = float(vo2s[i0]), float(vo2s[i_pk])
-            target = v0 + 0.95 * (vpk - v0)           # 95% пути к пику
-            t4 = float(te[i_pk])
-            for k in range(i0, i_pk + 1):
-                if vo2s[k] >= target:
-                    t4 = float(te[k])
-                    break
+        vpk = float(np.nanmax(vo2s))
+        sl = np.gradient(vo2s, te)
+        midm = (te > te[0] + 0.20 * dur) & (te < te[0] + 0.70 * dur)
+        smax = float(np.nanmax(sl[midm])) if midm.any() else float(np.nanmax(sl))
+        lo4 = te[0] + 0.50 * dur
+        for k in range(len(te)):
+            if te[k] > lo4 and sl[k] < 0.30 * smax and vo2s[k] >= 0.90 * vpk:
+                t4 = float(te[k])
+                break
+        if t4 is None:                              # запас: пик VO2
+            t4 = float(te[int(np.argmax(vo2s))])
     except Exception:
         t4 = None
     if t4 is not None:
-        res[4] = (t4, val_at('VO2', t4), 'Аэробный лимит (начало плато VO2)')
+        res[4] = (t4, val_at('VO2', t4), 'Аэробный лимит (начало плато VO2, ≥90% МПК)')
     elif v1[4] is not None:
         res[4] = v1[4]
         t4 = v1[4][0]
@@ -1280,19 +1284,26 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
             rr_min = round((t_rr[-1] - rr_on) / 60.0, 1)
         except Exception:
             rr_min = None
-        # ОСНОВНАЯ линия при наличии газа — по спаду ВЕНТИЛЯЦИИ (VE), а НЕ VO2.
-        # VO2 часто выходит на плато ДО конца нагрузки (это и есть аэробный
-        # лимит = точка 4), поэтому его пик приходит рано и линия вставала
-        # раньше реального конца нагрузки. VE (как и VCO2, ЧСС, надир RR)
-        # достигает максимума именно в конце нагрузки и резко падает на
-        # восстановлении — совпадает с надиром RR (пиком ЧСС). Кросс-проверка
-        # по надиру RR (в газовой шкале, через ЧСС-сдвиг offset_ms).
-        rec_onset = None
+        # ОСНОВНАЯ линия при наличии газа — по ПИКУ ПУЛЬСА (ЧСС). Пульс растёт
+        # всю нагрузку и достигает максимума ровно в момент её конца (спортсмен
+        # останавливается), затем резко падает — это самый чёткий и надёжный
+        # маркер конца нагрузки, теперь, когда синхронизация RR↔пульс выстроена.
+        # Пик берём по столбцу ЧСС из газа; сверяем с надиром RR (пик ЧСС из RR).
+        # VE-спад — только запас, если столбца ЧСС нет.
+        hr_peak = None
         try:
-            rec_onset = detect_recovery_start_vo2(times_sec, df['VE'].loc[2:].values)
+            if 'ЧСС' in df.columns:
+                _hg = pd.Series(df['ЧСС'].loc[2:].astype(float))
+                _hg[_hg <= 0] = np.nan
+                _hg = _hg.interpolate(limit_direction='both').values
+                _hgs = smooth_curve(_hg, sigma=5)
+                _rg = np.where((times_sec >= 0.30 * times_sec.max())
+                               & (times_sec <= 0.99 * times_sec.max()))[0]
+                if len(_rg) > 5:
+                    hr_peak = float(times_sec[_rg[int(np.argmax(_hgs[_rg]))]])
         except Exception:
-            rec_onset = None
-        # надир RR (пик ЧСС) в газовой шкале — независимая сверка/уточнение
+            hr_peak = None
+        # надир RR (пик ЧСС из RR) в газовой шкале — независимая сверка
         rr_nadir_gas = None
         try:
             _rc = _clean_rr(np.asarray(df_res['ОВР'].values, dtype=float))
@@ -1303,18 +1314,31 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                 rr_nadir_gas = float(_trr[_m][int(np.argmin(_ys[_m]))])
         except Exception:
             rr_nadir_gas = None
-        # если VE и надир RR близки — берём их среднее (устойчивее к шуму)
+        # запас по спаду VE, если пульса нет
+        ve_onset = None
+        try:
+            ve_onset = detect_recovery_start_vo2(times_sec, df['VE'].loc[2:].values)
+        except Exception:
+            ve_onset = None
+
+        rec_onset = hr_peak
+        src = 'пику ЧСС (газ)'
+        # если пик ЧСС и надир RR близки — усредняем (устойчивее)
         if rec_onset is not None and rr_nadir_gas is not None \
                 and abs(rec_onset - rr_nadir_gas) <= 25:
             rec_onset = 0.5 * (rec_onset + rr_nadir_gas)
+        if rec_onset is None:                    # нет ЧСС — берём надир RR или VE
+            rec_onset = rr_nadir_gas if rr_nadir_gas is not None else ve_onset
+            src = 'надиру RR' if rr_nadir_gas is not None else 'спаду VE (запас)'
 
         if rec_onset is not None:
             recovery_minutes = round((times_sec.max() - rec_onset) / 60.0, 1)
             r_txt = f'{rr_min} мин' if rr_min is not None else '—'
             n_txt = f', надир RR {rr_nadir_gas:.0f}с' if rr_nadir_gas is not None else ''
+            v_txt = f', VE-спад {ve_onset:.0f}с' if ve_onset is not None else ''
             f_txt = f', Фаза {faza_min} мин' if faza_min is not None else ''
-            print(f'Авто: начало восстановления по спаду VE {rec_onset:.0f}с '
-                  f'-> {recovery_minutes} мин. Сверка: RR {r_txt}{n_txt}{f_txt}')
+            print(f'Авто: начало восстановления по {src} {rec_onset:.0f}с '
+                  f'-> {recovery_minutes} мин. Сверка: RR {r_txt}{n_txt}{v_txt}{f_txt}')
         elif rr_min is not None:                 # газа нет — по RR
             recovery_minutes = rr_min
             print(f'Газа нет; начало восстановления по RR: {recovery_minutes} мин')
