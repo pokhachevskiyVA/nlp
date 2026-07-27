@@ -828,26 +828,33 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
     if res[3] is None and v1[3] is not None:
         res[3], t3 = v1[3], v1[3][0]
 
-    # --- Точка 2 (ацидотический pH-порог): кластеризация изломов ВВЕРХ ---
-    #     кривых VCO2 и VE строго между точкой 1 и RCP.
+    # --- Точка 2 (ацидотический pH-порог) — по методу Лелявиной: ВТОРОЙ ---
+    #     перелом (излом вверх) кривых VCO2 и VE, т.е. СЛЕДУЮЩИЙ консенсусный
+    #     излом после точки 1 (лактатного порога) и строго до RCP. Берём
+    #     САМЫЙ РАННИЙ такой кластер (а не сильнейший — сильнейший обычно у RCP
+    #     и завышал точку 2). Так определение совпадает со статьёй: точка 1 —
+    #     1-й перелом, точка 2 — 2-й перелом VCO2/VE.
     lo2 = (t1 + 0.5 * tol) if t1 is not None else te[0] + 0.3 * dur
-    hi2 = (t3 - 0.3 * tol) if t3 is not None else te[0] + 0.85 * dur
+    hi2 = (t3 - 0.5 * tol) if t3 is not None else te[0] + 0.85 * dur
     cands = []
     for nm in ['VCO2', 'VE', 'RER']:
         if C.get(nm) is None:
             continue
         try:
-            for (tm, st) in _kink_peaks(te, C[nm], win, +1, ntop=4):
+            for (tm, st) in _kink_peaks(te, C[nm], win, +1, ntop=5):
                 if lo2 < tm < hi2:
                     cands.append((tm, st, nm))
         except Exception:
             pass
     clusters = _cluster_times(cands, tol)
+    # консенсус: подтверждён VCO2 или VE (можно и одиночный сильный VCO2/VE)
     cons = [cl for cl in clusters if ({'VCO2', 'VE'} & cl['curves'])]
-    if cons:
-        c2 = max(cons, key=lambda cl: (cl['support'], cl['strength']))
+    cons2 = [cl for cl in cons if cl['support'] >= 2]
+    pool = cons2 if cons2 else cons
+    if pool:
+        c2 = min(pool, key=lambda cl: cl['t'])       # САМЫЙ РАННИЙ (2-й перелом)
         res[2] = (c2['t'], val_at('VCO2', c2['t']),
-                  'Ацидотический (pH) порог; кривых: %d' % c2['support'])
+                  'Ацидотический (pH) порог — 2-й перелом VCO2/VE; кривых: %d' % c2['support'])
     elif v1[2] is not None and hi2 > v1[2][0] > lo2:
         res[2] = v1[2]
 
