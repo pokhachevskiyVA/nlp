@@ -722,43 +722,33 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
             cand = int(idx[int(np.argmin(yy))])
         return cand
 
-    # --- Точка 1 (лактатный порог) — ПО МЕТОДУ ЛЕЛЯВИНОЙ: ---
-    #     перелом (излом вверх) кривых RER, VCO2, VE. Момент включения
-    #     анаэробного метаболизма: RER, VCO2 и VE одновременно дают загиб
-    #     вверх. Берём САМЫЙ РАННИЙ кластер изломов, подтверждённый ≥2 из
-    #     этих трёх кривых (консенсус). Это заменяет прежний критерий
-    #     (минимум VE/VO2), чтобы определение совпадало со статьёй Лелявиной
-    #     (Рос. кардиол. журн. 2014;11:19–24: «точка 1 — переломы RER, VCO2, VE»).
+    # --- Точка 1 (лактатный порог) — ПЕРВЫЙ ИЗГИБ RER (вывод эксперта): ---
+    #     на графике RER хорошо виден первый изгиб — RER снижается в начале
+    #     (аэробный обмен, окисление жиров), затем на лактатном пороге
+    #     разворачивается вверх (буферизация лактата бикарбонатом даёт лишний
+    #     CO2). Момент разворота = МИНИМУМ RER = первый изгиб. Это надёжнее и
+    #     однозначнее консенсуса изломов (не цепляет старт нагрузки и не
+    #     промахивается). RER = VCO2/VO2.
     t1 = None
     try:
-        # БЕЗ окна поиска: перелом ищем по всей преднагрузочной части
-        # (te[0]…te[-1], восстановление уже исключено). Точка 1 может попасть и
-        # на разминку/старт — это допустимо (так решили с экспертом).
-        lo_t = te[0]
-        hi_t = te[-1]
-        cands1 = []
-        for nm in ['RER', 'VCO2', 'VE']:
-            if C.get(nm) is None:
-                continue
-            for (tk, st) in _kink_peaks(te, C[nm], win, +1, ntop=4):
-                if lo_t <= tk <= hi_t:
-                    cands1.append((tk, st, nm))
-        clusters1 = _cluster_times(cands1, tol)
-        consensus = [cl for cl in clusters1 if cl['support'] >= 2]
-        if consensus:
-            cl = min(consensus, key=lambda c: c['t'])   # самый ранний консенсус
-            t1 = float(cl['t'])
-            res[1] = (t1, val_at('VE/VO2', t1),
-                      'Лактатный порог (перелом RER/VCO2/VE); кривых: %d' % cl['support'])
-        elif clusters1:                                  # нет консенсуса — сильнейший излом
-            cl = max(clusters1, key=lambda c: c['strength'])
-            t1 = float(cl['t'])
-            res[1] = (t1, val_at('VE/VO2', t1),
-                      'Лактатный порог (перелом RER/VCO2/VE); кривых: %d' % cl['support'])
+        rer = C.get('RER')
+        if rer is not None:
+            rr_a = np.asarray(rer, dtype=float)
+            # ищем минимум RER до ~70% преднагрузочного окна (после минимума RER
+            # только растёт). Пропускаем первые ~3% — шум в самом начале записи.
+            skip = int(len(te) * 0.03)
+            hi_i = int(len(te) * 0.70)
+            idx = np.arange(skip, max(skip + 3, hi_i))
+            idx = idx[idx < len(te)]
+            if len(idx) >= 3:
+                i1 = int(idx[int(np.argmin(rr_a[idx]))])
+                t1 = float(te[i1])
+                res[1] = (t1, val_at('RER', t1),
+                          'Лактатный порог (первый изгиб RER = минимум RER)')
     except Exception:
         pass
     if res[1] is None:
-        # запас: минимум VE/VO2 (прежний критерий), затем v1
+        # запас: минимум VE/VO2, затем v1
         try:
             i1 = argmin_in(C['VE/VO2'], te[0] + 0.08 * dur, te[0] + 0.70 * dur)
             if i1 is not None:
