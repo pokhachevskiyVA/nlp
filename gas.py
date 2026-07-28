@@ -832,7 +832,7 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
         if C.get(nm) is None:
             continue
         try:
-            for (tm, st) in _kink_peaks(te, C[nm], win, +1, ntop=5):
+            for (tm, st) in _kink_peaks(te, C[nm], win, +1, ntop=7):
                 if lo2 < tm < hi2:
                     cands.append((tm, st, nm))
         except Exception:
@@ -848,6 +848,22 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
                   'Ацидотический (pH) порог — 2-й перелом VCO2/VE; кривых: %d' % c2['support'])
     elif v1[2] is not None and hi2 > v1[2][0] > lo2:
         res[2] = v1[2]
+    else:
+        # ЗАПАС (чтобы точка 2 была всегда, как требует эксперт — у Бабкина
+        # излом VCO2 слабый и не даёт кластера): кусочно-линейный перелом
+        # сглаженной VCO2 в окне (lo2, hi2) — он определяется всегда.
+        try:
+            wm = (te >= lo2) & (te <= hi2)
+            if wm.sum() >= 6:
+                tw = te[wm]
+                yw = np.asarray(C['VCO2'], dtype=float)[wm]
+                bk = _piecewise_breakpoint(tw, yw, 0.15, 0.85)
+                if bk is not None:
+                    t2f = float(tw[bk])
+                    res[2] = (t2f, val_at('VCO2', t2f),
+                              'Ацидотический (pH) порог — перелом VCO2 (запас)')
+        except Exception:
+            pass
 
     if return_details:
         # Глобальные консенсус-кандидаты (изломы, подтверждённые >=2 кривыми)
