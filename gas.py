@@ -760,22 +760,19 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
     if res[1] is None and v1[1] is not None:
         res[1], t1 = v1[1], v1[1][0]
 
-    # --- Точка 4 (аэробный лимит): НАЧАЛО ПЛАТО VO2 (метод касательной). ---
-    #     VO2 растёт ~линейно, затем выходит на плато. Точка 4 — начало плато:
-    #     первый момент, когда наклон VO2 падает ниже 30% от максимального
-    #     (в средней части нагрузки) И VO2 достиг ≥90% пика (ограничение по
-    #     эксперту). Это раньше прежнего «95% пути к пику» и даёт ~90-94% МПК
-    #     (близко к референсу 93%), а не почти-пик.
+    # --- Точка 4 (аэробный лимит): ФИНАЛЬНОЕ плато VO2 (вывод эксперта). ---
+    #     VO2 к концу нагрузки выходит на плато «лесенкой» — есть несколько
+    #     мелких площадок. Нужна ПОСЛЕДНЯЯ (первая точка финального плато, после
+    #     последнего перегиба), у самого конца — VO2 там ≈97-100% пика. Берём
+    #     первый момент во второй половине, где VO2 достигает ≥97% пика (можно и
+    #     100% — это нормально). Не путать с ранними площадками (90-93%).
     t4 = None
     try:
         vo2s = np.asarray(C['VO2'], dtype=float)
         vpk = float(np.nanmax(vo2s))
-        sl = np.gradient(vo2s, te)
-        midm = (te > te[0] + 0.20 * dur) & (te < te[0] + 0.70 * dur)
-        smax = float(np.nanmax(sl[midm])) if midm.any() else float(np.nanmax(sl))
         lo4 = te[0] + 0.50 * dur
         for k in range(len(te)):
-            if te[k] > lo4 and sl[k] < 0.30 * smax and vo2s[k] >= 0.90 * vpk:
+            if te[k] > lo4 and vo2s[k] >= 0.97 * vpk:
                 t4 = float(te[k])
                 break
         if t4 is None:                              # запас: пик VO2
@@ -783,7 +780,7 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
     except Exception:
         t4 = None
     if t4 is not None:
-        res[4] = (t4, val_at('VO2', t4), 'Аэробный лимит (начало плато VO2, ≥90% МПК)')
+        res[4] = (t4, val_at('VO2', t4), 'Аэробный лимит (финальное плато VO2, ≥97% пика)')
     elif v1[4] is not None:
         res[4] = v1[4]
         t4 = v1[4][0]
