@@ -1662,10 +1662,11 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                     continue
                 tx = rec_start + dt
                 hrr = hr_peak - hv
+                ypos = 0.90 if dt == 60 else 0.78     # разносим по высоте
                 add_vline_all(tx, col_, dash='dot', width=1.3)
                 fig.add_annotation(
-                    x=tx, xref='x', yref='y domain', y=0.62,
-                    text=f'{dt // 60}мин ЧСС{hv:.0f} (−{hrr:.0f})',
+                    x=tx, xref='x', yref='y domain', y=ypos,
+                    text=f"{dt // 60}'={hv:.0f}(−{hrr:.0f})",
                     showarrow=False, font=dict(color=col_, size=9),
                     xanchor='left', yanchor='bottom', xshift=2)
             # выход ЧСС < 100 уд/мин
@@ -1674,7 +1675,7 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                 if _hgs[i] < 100:
                     add_vline_all(float(times_sec[i]), '#17becf', dash='dot', width=1.3)
                     fig.add_annotation(
-                        x=float(times_sec[i]), xref='x', yref='y domain', y=0.74,
+                        x=float(times_sec[i]), xref='x', yref='y domain', y=0.66,
                         text='ЧСС<100', showarrow=False,
                         font=dict(color='#17becf', size=9),
                         xanchor='left', yanchor='bottom', xshift=2)
