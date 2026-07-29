@@ -800,29 +800,51 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
     #     85% МПК и строго левее точки 4. У Ефремова выходит ≈96% МПК.
     #     Ограничение по эксперту: точка 3 НЕ РАНЕЕ 85% МПК и левее точки 4
     #     (RCP должен быть недалеко от аэробного лимита).
+    #     Берём НАЧАЛО восходящей части = МИНИМУМ (корыто) VE/VCO2 в окне
+    #     [85% МПК … точка 4): с него начинается терминальный подъём (RCP).
     t3 = None
     try:
         vq = np.asarray(C['VE/VCO2'], dtype=float)
         hi_cut = t4 if t4 is not None else te[-1]
         w3 = np.where((pct >= 85.0) & (te < hi_cut))[0]
-        if len(w3) >= 4:
-            i3 = rise_onset(vq, float(te[w3[0]]), float(te[w3[-1]]))
-            if i3 is not None:
-                t3 = float(te[i3])
-                s = support_at(t3, ['VE/VCO2', 'VE', 'RER'], +1)
-                res[3] = (t3, val_at('VE/VCO2', t3),
-                          'RCP (начало роста VE/VCO2, >=85%% МПК); кривых: %d' % max(s, 1))
+        if len(w3) >= 3:
+            i3 = int(w3[int(np.argmin(vq[w3]))])       # корыто = начало подъёма
+            t3 = float(te[i3])
+            s = support_at(t3, ['VE/VCO2', 'VE', 'RER'], +1)
+            res[3] = (t3, val_at('VE/VCO2', t3),
+                      'RCP (начало роста VE/VCO2, корыто >=85%% МПК); кривых: %d' % max(s, 1))
     except Exception:
         pass
     if res[3] is None and v1[3] is not None:
         res[3], t3 = v1[3], v1[3][0]
 
-    # --- Точка 2 (ацидотический pH-порог) — по методу Лелявиной: ВТОРОЙ ---
-    #     перелом (излом вверх) кривых VCO2 и VE, т.е. СЛЕДУЮЩИЙ консенсусный
-    #     излом после точки 1 (лактатного порога) и строго до RCP. Берём
-    #     САМЫЙ РАННИЙ такой кластер (а не сильнейший — сильнейший обычно у RCP
-    #     и завышал точку 2). Так определение совпадает со статьёй: точка 1 —
-    #     1-й перелом, точка 2 — 2-й перелом VCO2/VE.
+    # --- Точка 2 (ацидотический pH-порог) — ОСНОВНОЙ метод (по эксперту): ---
+    #     ВЫХОД RER НА ПЛАТО / более горизонтальный уровень. После точки 1 RER
+    #     круто растёт; первое ПЛЕЧО (выполаживание) = точка 2. Ищем первый
+    #     момент в (t1, t3), где наклон RER упал ≤30% от достигнутого максимума
+    #     роста (после заметного подъёма). Старый метод (2-й перелом VCO2/VE)
+    #     оставлен ниже как ЗАПАС — к нему можно вернуться.
+    try:
+        rer_c = np.asarray(C['RER'], dtype=float)
+        lo_r = t1 if t1 is not None else te[0] + 0.20 * dur
+        hi_r = t3 if t3 is not None else te[0] + 0.90 * dur
+        idx2 = np.where((te > lo_r) & (te < hi_r))[0]
+        if len(idx2) >= 6:
+            slr = np.gradient(rer_c, te)
+            smax_all = float(np.nanmax(slr[idx2]))
+            if smax_all > 0:
+                runmax = 0.0
+                for k in idx2:
+                    runmax = max(runmax, slr[k])
+                    if runmax >= 0.4 * smax_all and slr[k] <= 0.30 * runmax:
+                        t2r = float(te[k])
+                        res[2] = (t2r, val_at('RER', t2r),
+                                  'Ацидотический (pH) порог — выход RER на плато')
+                        break
+    except Exception:
+        pass
+
+    # --- ЗАПАС (прежний метод: 2-й перелом VCO2/VE), если RER-плато не найдено —
     lo2 = (t1 + 0.5 * tol) if t1 is not None else te[0] + 0.3 * dur
     hi2 = (t3 - 0.5 * tol) if t3 is not None else te[0] + 0.85 * dur
     cands = []
@@ -840,7 +862,9 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
     cons = [cl for cl in clusters if ({'VCO2', 'VE'} & cl['curves'])]
     cons2 = [cl for cl in cons if cl['support'] >= 2]
     pool = cons2 if cons2 else cons
-    if pool:
+    if res[2] is not None:
+        pass                                          # точка 2 уже найдена по RER
+    elif pool:
         c2 = min(pool, key=lambda cl: cl['t'])       # САМЫЙ РАННИЙ (2-й перелом)
         res[2] = (c2['t'], val_at('VCO2', c2['t']),
                   'Ацидотический (pH) порог — 2-й перелом VCO2/VE; кривых: %d' % c2['support'])
