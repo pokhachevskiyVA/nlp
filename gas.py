@@ -772,10 +772,10 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
     #     в диапазоне 95-100% МПК. VO2 там ≈100% — это нормально.
     #     КОСТЫЛЬ (по эксперту): VO2 не всегда выходит на явное плато, поэтому
     #     плато-детектор ненадёжен. Берём точку 4 как первый выход VO2 на уровень
-    #     (100% − стандартная ошибка МПК). Среднюю ст.ошибку МПК посчитали по всем
-    #     59 спортсменам: SD(VO2 в зоне ≥95% пика)/sqrt(n) ≈ 1.64% пика. Значит
-    #     порог = 98.4% пика — определяется ВСЕГДА, даже без плато.
-    P4_FRAC = 0.984
+    #     (100% − 2·сигма МПК). Средняя сигма МПК по 59 спортсменам ≈ 1.64% пика;
+    #     отступ в ДВЕ сигмы (по эксперту) = 3.28% -> порог 96.7% пика.
+    #     Определяется ВСЕГДА, даже без плато.
+    P4_FRAC = 1.0 - 2 * 0.0164
     t4 = None
     try:
         lo4 = te[0] + 0.50 * dur
@@ -789,7 +789,7 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
         t4 = None
     if t4 is not None:
         res[4] = (t4, val_at('VO2', t4),
-                  'Аэробный лимит (VO2 ≥ 98.4% пика = 100% − ст.ошибка МПК)')
+                  'Аэробный лимит (VO2 ≥ 96.7% пика = 100% − 2σ МПК)')
     elif v1[4] is not None:
         res[4] = v1[4]
         t4 = v1[4][0]
@@ -819,28 +819,24 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
         res[3], t3 = v1[3], v1[3][0]
 
     # --- Точка 2 (ацидотический pH-порог) — ОСНОВНОЙ метод (по эксперту): ---
-    #     ВЫХОД RER НА ПЛАТО / более горизонтальный уровень. После точки 1 RER
-    #     круто растёт; первое ПЛЕЧО (выполаживание) = точка 2. Ищем первый
-    #     момент в (t1, t3), где наклон RER упал ≤30% от достигнутого максимума
-    #     роста (после заметного подъёма). Старый метод (2-й перелом VCO2/VE)
-    #     оставлен ниже как ЗАПАС — к нему можно вернуться.
+    #     ИЗЛОМ RER ВНИЗ = выход RER на горизонтальный (или более горизонтальный,
+    #     чем был) уровень: кривая RER перестаёт круто расти и загибается вниз.
+    #     Ищем в (t1, t3) изломы ВНИЗ (sign=-1) и берём САМЫЙ РАННИЙ заметный
+    #     (сила ≥ 40% от максимальной среди них). Старый метод (2-й перелом
+    #     VCO2/VE) оставлен ниже как ЗАПАС — к нему можно вернуться.
     try:
         rer_c = np.asarray(C['RER'], dtype=float)
         lo_r = t1 if t1 is not None else te[0] + 0.20 * dur
         hi_r = t3 if t3 is not None else te[0] + 0.90 * dur
-        idx2 = np.where((te > lo_r) & (te < hi_r))[0]
-        if len(idx2) >= 6:
-            slr = np.gradient(rer_c, te)
-            smax_all = float(np.nanmax(slr[idx2]))
-            if smax_all > 0:
-                runmax = 0.0
-                for k in idx2:
-                    runmax = max(runmax, slr[k])
-                    if runmax >= 0.4 * smax_all and slr[k] <= 0.30 * runmax:
-                        t2r = float(te[k])
-                        res[2] = (t2r, val_at('RER', t2r),
-                                  'Ацидотический (pH) порог — выход RER на плато')
-                        break
+        downs = [(tk, st) for (tk, st) in _kink_peaks(te, rer_c, win, -1, ntop=6)
+                 if lo_r < tk < hi_r]
+        if downs:
+            smax_d = max(st for _, st in downs)
+            strong = [tk for tk, st in downs if st >= 0.4 * smax_d]
+            if strong:
+                t2r = float(min(strong))            # самый ранний заметный излом вниз
+                res[2] = (t2r, val_at('RER', t2r),
+                          'Ацидотический (pH) порог — излом RER вниз (выход на горизонталь)')
     except Exception:
         pass
 
