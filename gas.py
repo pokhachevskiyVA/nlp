@@ -1636,6 +1636,52 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
     except Exception:
         pass
 
+    # ---- МАРКЕРЫ СКОРОСТИ ВОССТАНОВЛЕНИЯ ЧСС (HRR) ----
+    # Скорость восстановления пульса — прогностический маркер (Cole CR et al.,
+    # NEJM 1999: падение ЧСС за 1-ю минуту ≤12 уд/мин удваивает смертность;
+    # В.М. Михайлов: за 1-ю минуту ЧСС должна упасть не менее чем на 25). Ставим
+    # на восстановлении вертикали на 1-й и 2-й минутах с подписью HRR (спад ЧСС
+    # от пика) и отмечаем момент выхода ЧСС ниже 100 уд/мин.
+    try:
+        if 'ЧСС' in df.columns:
+            _hg = pd.Series(df['ЧСС'].loc[2:].astype(float))
+            _hg[_hg <= 0] = np.nan
+            _hgs = smooth_curve(_hg.interpolate(limit_direction='both').values, sigma=4)
+            _ir = int(np.argmin(np.abs(times_sec - rec_start)))
+            hr_peak = float(np.nanmax(_hgs[max(0, _ir - 5):_ir + 3]))
+            t_end = float(times_sec[-1])
+
+            def _hr_at(dt):
+                tt = rec_start + dt
+                if tt > t_end + 1:
+                    return None
+                return float(_hgs[int(np.argmin(np.abs(times_sec - tt)))])
+            for dt, col_ in ((60, '#e377c2'), (120, '#7f4fc2')):
+                hv = _hr_at(dt)
+                if hv is None:
+                    continue
+                tx = rec_start + dt
+                hrr = hr_peak - hv
+                add_vline_all(tx, col_, dash='dot', width=1.3)
+                fig.add_annotation(
+                    x=tx, xref='x', yref='y domain', y=0.62,
+                    text=f'{dt // 60}мин ЧСС{hv:.0f} (−{hrr:.0f})',
+                    showarrow=False, font=dict(color=col_, size=9),
+                    xanchor='left', yanchor='bottom', xshift=2)
+            # выход ЧСС < 100 уд/мин
+            _rm = np.where(times_sec >= rec_start)[0]
+            for i in _rm:
+                if _hgs[i] < 100:
+                    add_vline_all(float(times_sec[i]), '#17becf', dash='dot', width=1.3)
+                    fig.add_annotation(
+                        x=float(times_sec[i]), xref='x', yref='y domain', y=0.74,
+                        text='ЧСС<100', showarrow=False,
+                        font=dict(color='#17becf', size=9),
+                        xanchor='left', yanchor='bottom', xshift=2)
+                    break
+    except Exception:
+        pass
+
     # Линия НАЧАЛА НАГРУЗКИ (чёрная, сплошная): всё левее — предстарт/старт,
     # в анализ нагрузки и в проценты не входит.
     if load_start and load_start > times_sec.min() + 1:
