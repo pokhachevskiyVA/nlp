@@ -770,28 +770,26 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
     #     VE/VO2 в конце круто растёт и выходит на плато у самого верха —
     #     берём ПЕРВУЮ точку этого плато (где наклон VE/VO2 упал почти до нуля)
     #     в диапазоне 95-100% МПК. VO2 там ≈100% — это нормально.
-    #     ВЕРХНЕЕ плато (у 100% МПК), а не ранние площадки: берём первый момент
-    #     в окне 95-100% МПК, где VE/VO2 достигает ≥98% своего максимума в этом
-    #     окне (выход на финальное плато).
+    #     КОСТЫЛЬ (по эксперту): VO2 не всегда выходит на явное плато, поэтому
+    #     плато-детектор ненадёжен. Берём точку 4 как первый выход VO2 на уровень
+    #     (100% − стандартная ошибка МПК). Среднюю ст.ошибку МПК посчитали по всем
+    #     59 спортсменам: SD(VO2 в зоне ≥95% пика)/sqrt(n) ≈ 1.64% пика. Значит
+    #     порог = 98.4% пика — определяется ВСЕГДА, даже без плато.
+    P4_FRAC = 0.984
     t4 = None
     try:
-        vev = np.asarray(C['VE/VO2'], dtype=float)
-        w4 = np.where((pct >= 95.0) & (pct <= 100.0))[0]
-        if len(w4) >= 3:
-            mx = float(np.nanmax(vev[w4]))
-            thr = 0.98 * mx
-            pick = None
-            for k in w4:
-                if vev[k] >= thr:
-                    pick = k
-                    break
-            t4 = float(te[pick if pick is not None else w4[-1]])
+        lo4 = te[0] + 0.50 * dur
+        for k in range(len(te)):
+            if te[k] > lo4 and vo2c[k] >= P4_FRAC * vpk:
+                t4 = float(te[k])
+                break
         if t4 is None:                              # запас: пик VO2
             t4 = float(te[int(np.argmax(vo2c))])
     except Exception:
         t4 = None
     if t4 is not None:
-        res[4] = (t4, val_at('VO2', t4), 'Аэробный лимит (плато VE/VO2, ~100% МПК)')
+        res[4] = (t4, val_at('VO2', t4),
+                  'Аэробный лимит (VO2 ≥ 98.4% пика = 100% − ст.ошибка МПК)')
     elif v1[4] is not None:
         res[4] = v1[4]
         t4 = v1[4][0]
@@ -800,31 +798,20 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
     #     VE/VCO2 держит «корыто/плато» до ~90-95% МПК, затем финальный подъём —
     #     берём НАЧАЛО этого подъёма (последнее «дно» перед ростом), в окне от
     #     85% МПК и строго левее точки 4. У Ефремова выходит ≈96% МПК.
+    #     Ограничение по эксперту: точка 3 НЕ РАНЕЕ 85% МПК и левее точки 4
+    #     (RCP должен быть недалеко от аэробного лимита).
     t3 = None
     try:
         vq = np.asarray(C['VE/VCO2'], dtype=float)
         hi_cut = t4 if t4 is not None else te[-1]
-        pct4 = float(pct[int(np.argmin(np.abs(te - hi_cut)))])
-        # окно снизу — 85% МПК (по эксперту). Если у «крутых» атлетов VO2
-        # доходит до 85% лишь у конца и точка 3 липнет к точке 4 — опускаем
-        # нижнюю границу окна (75%, затем 60%), чтобы разнести точки.
-        for floor in (85.0, 75.0, 60.0):
-            w3 = np.where((pct >= floor) & (te < hi_cut))[0]
-            if len(w3) < 4:
-                continue
+        w3 = np.where((pct >= 85.0) & (te < hi_cut))[0]
+        if len(w3) >= 4:
             i3 = rise_onset(vq, float(te[w3[0]]), float(te[w3[-1]]))
-            if i3 is None:
-                continue
-            cand = float(te[i3])
-            candpct = float(pct[i3])
-            # приемлемо, если точка 3 хотя бы на ~3% МПК ниже точки 4
-            if candpct <= pct4 - 3.0 or floor == 60.0:
-                t3 = cand
-                break
-        if t3 is not None:
-            s = support_at(t3, ['VE/VCO2', 'VE', 'RER'], +1)
-            res[3] = (t3, val_at('VE/VCO2', t3),
-                      'RCP (начало роста VE/VCO2, до точки 4); кривых: %d' % max(s, 1))
+            if i3 is not None:
+                t3 = float(te[i3])
+                s = support_at(t3, ['VE/VCO2', 'VE', 'RER'], +1)
+                res[3] = (t3, val_at('VE/VCO2', t3),
+                          'RCP (начало роста VE/VCO2, >=85%% МПК); кривых: %d' % max(s, 1))
     except Exception:
         pass
     if res[3] is None and v1[3] is not None:
