@@ -1137,11 +1137,19 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
     rr_s = smooth_curve(ovr.values, sigma=5)
 
     # ---- начало восстановления по RR ----
+    # НАДИР сглаженной RR (минимум RR = пик ЧСС = момент остановки = конец
+    # нагрузки). Надёжнее «колена» (detect_recovery_start_curve иногда
+    # срабатывает на ~100 с позже, если у RR плоское дно).
     if recovery_minutes is None and recovery_auto:
-        onset = detect_recovery_start_curve(t, rr_s)
+        reg = (t >= 0.30 * t[-1]) & (t <= 0.99 * t[-1])
+        onset = None
+        if reg.any():
+            onset = float(t[reg][int(np.argmin(rr_s[reg]))])
+        if onset is None:
+            onset = detect_recovery_start_curve(t, rr_s)
         if onset is not None:
             recovery_minutes = round((t[-1] - onset) / 60.0, 1)
-            print(f'RR-only: начало восстановления {onset:.0f} с '
+            print(f'RR-only: начало восстановления (надир RR) {onset:.0f} с '
                   f'-> {recovery_minutes} мин')
     if recovery_minutes is None:
         try:
