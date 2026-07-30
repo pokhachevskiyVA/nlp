@@ -1031,6 +1031,88 @@ def find_last_name(ext, directory='.'):
 
 
 # ------------------------------------------------------------------ #
+#  Предсказание ЧСС порогов 1-4 ТОЛЬКО по RR (обучено на 59 лыжниках).
+#  Признаки: restHR/peakHR/reserveHR (ЧСС покоя/пик/резерв), cutXX (ЧСС в
+#  момент падения вариабельности RMSSD до XX% от исходной), mikh_HR (точка
+#  Михайлова = RMSSD-пол), bp1_HR/bp2_HR (переломы тренда, Похачевский).
+#  Модель: гребневая регрессия по стандартизованным признакам. Точность
+#  (leave-one-out): т1 ~5, т2 ~8, т3 ~5, т4 ~8 уд/мин.
+# ------------------------------------------------------------------ #
+RR_HR_MODELS = {
+ 'т1': {'feats': ['cut60', 'cut50', 'mikh_HR', 'reserveHR'],
+        'median': {'cut60': 109.29, 'cut50': 109.49, 'mikh_HR': 105.87, 'reserveHR': 106.84},
+        'mean': [110.96, 111.40, 103.32, 105.45], 'std': [12.63, 12.22, 17.56, 12.47],
+        'coef': [5.083, 3.785, 1.634, -2.366], 'intercept': 116.599},
+ 'т2': {'feats': ['cut60', 'cut40', 'mikh_HR', 'bp1_HR'],
+        'median': {'cut60': 109.29, 'cut40': 110.50, 'mikh_HR': 105.87, 'bp1_HR': 127.89},
+        'mean': [110.96, 112.28, 103.32, 130.71], 'std': [12.63, 12.27, 17.56, 15.58],
+        'coef': [7.089, -1.261, 1.469, 3.559], 'intercept': 136.861},
+ 'т3': {'feats': ['peakHR', 'cut20', 'cut15'],
+        'median': {'peakHR': 185.85, 'cut20': 122.20, 'cut15': 122.20},
+        'mean': [185.59, 121.01, 124.38], 'std': [8.07, 13.98, 14.77],
+        'coef': [6.898, 0.500, 1.645], 'intercept': 167.336},
+ 'т4': {'feats': ['bp2_HR', 'peakHR', 'reserveHR'],
+        'median': {'bp2_HR': 157.20, 'peakHR': 185.85, 'reserveHR': 106.84},
+        'mean': [156.07, 185.59, 105.45], 'std': [20.06, 8.07, 12.47],
+        'coef': [11.150, 3.307, 0.856], 'intercept': 175.598},
+}
+
+
+def rr_hr_features(rc, t, rr_s, load_start, rec_start):
+    """RR-признаки для предсказания ЧСС порогов (см. RR_HR_MODELS).
+
+    rc — очищенные RR (мс), t — их время (с), rr_s — сглаженная RR,
+    load_start/rec_start — границы нагрузки. Возвращает dict признаков.
+    """
+    f = {}
+    try:
+        f['restHR'] = float(60000.0 / np.median(rc[:10]))
+        f['peakHR'] = float(60000.0 / np.nanmin(rr_s))
+        f['reserveHR'] = f['peakHR'] - f['restHR']
+        rms = pd.Series(np.abs(np.diff(rc))).rolling(20, min_periods=5).mean().values
+        trm = t[1:]
+        hrm = 60000.0 / rc[1:]
+        load = (trm >= load_start) & (trm < rec_start)
+        if load.sum() > 10:
+            base = np.nanmax(rms[load][:max(3, load.sum() // 3)])
+            for c in (60, 50, 40, 30, 20, 15, 10, 7):
+                hv = None
+                for i in np.where(load)[0]:
+                    if rms[i] < (c / 100.0) * base:
+                        hv = float(hrm[i]); break
+                f[f'cut{c}'] = hv
+        mk = rr_candidate_markers(t, rc, rr_s, rec_start)
+
+        def _hr_at(tt):
+            if tt is None:
+                return None
+            return float(60000.0 / rr_s[int(np.argmin(np.abs(t - tt)))])
+        f['mikh_HR'] = _hr_at(mk.get('rmssd_floor'))
+        f['bp1_HR'] = _hr_at(mk.get('trend_bp1'))
+        f['bp2_HR'] = _hr_at(mk.get('trend_bp2'))
+    except Exception:
+        pass
+    return f
+
+
+def predict_point_hr(pt, feats):
+    """Предсказанная ЧСС порога pt ('т1'..'т4') по RR-признакам feats."""
+    m = RR_HR_MODELS.get(pt)
+    if m is None:
+        return None
+    try:
+        y = m['intercept']
+        for j, fn in enumerate(m['feats']):
+            v = feats.get(fn)
+            if v is None:
+                v = m['median'][fn]
+            y += m['coef'][j] * (v - m['mean'][j]) / m['std'][j]
+        return float(y)
+    except Exception:
+        return None
+
+
+# ------------------------------------------------------------------ #
 #  RR-only режим: только по .rr файлу (без газового анализа)
 # ------------------------------------------------------------------ #
 def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
@@ -1120,6 +1202,52 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
                            font=dict(color=color, size=10),
                            xanchor=side, yanchor='bottom',
                            xshift=(-2 if side == 'right' else 2))
+    # ---- ПРЕДСКАЗАННЫЕ точки 1-4 по RR (нет газа -> оцениваем моделью) ----
+    # Модель даёт ЧСС порога; находим на кривой RR момент, где ЧСС (60000/RR)
+    # достигает этой величины на нагрузке, и ставим предсказанную точку.
+    try:
+        rc_f = _clean_rr(ovr.values)
+        # оценка начала нагрузки: конец «полки покоя» — где RR уходит вниз
+        pre = t < rec_start
+        if pre.sum() > 10:
+            emax = float(np.nanmax(rr_s[pre][:max(3, int(pre.sum() * 0.25))]))
+            load_start = float(t[0])
+            for k in np.where(pre)[0]:
+                if rr_s[k] < 0.92 * emax:
+                    load_start = float(t[k]); break
+            feats = rr_hr_features(rc_f, t, rr_s, load_start, rec_start)
+            hr_s = 60000.0 / rr_s
+            pcol = {'т1': '#1f77b4', 'т2': '#9467bd', 'т3': '#d62728', 'т4': '#8c564b'}
+            ln = (t >= load_start) & (t < rec_start)
+            for pnum, pt in enumerate(('т1', 'т2', 'т3', 'т4'), start=1):
+                ph = predict_point_hr(pt, feats)
+                if ph is None:
+                    continue
+                idxl = np.where(ln)[0]
+                tp = None
+                for k in idxl:                       # первый выход ЧСС на предсказанный уровень
+                    if hr_s[k] >= ph:
+                        tp = float(t[k]); break
+                if tp is None:
+                    continue
+                for i in (1, 2):
+                    suf = '' if i == 1 else str(i)
+                    fig.add_shape(type='line', xref='x' + suf, yref='y' + suf + ' domain',
+                                  x0=tp, x1=tp, y0=0, y1=1,
+                                  line=dict(color=pcol[pt], width=1.5, dash='dashdot'))
+                fig.add_annotation(x=tp, xref='x', yref='y domain',
+                                   y=0.04 + 0.12 * (pnum % 2),
+                                   text=f'{pnum}п (ЧСС≈{ph:.0f})', showarrow=False,
+                                   font=dict(color=pcol[pt], size=10),
+                                   xanchor='left', yanchor='bottom', xshift=2)
+            print('RR-only: точки 1-4 предсказаны по RR (нет газа) — '
+                  'ЧСС порогов: ' + ', '.join(
+                      f'{n}={predict_point_hr(p, feats):.0f}'
+                      for n, p in zip((1, 2, 3, 4), ('т1', 'т2', 'т3', 'т4'))
+                      if predict_point_hr(p, feats) is not None))
+    except Exception:
+        pass
+
     for i, ttl in ((1, 'RR'), (2, 'RR сглаж.')):
         suf = '' if i == 1 else str(i)
         fig.add_annotation(text='<b>' + ttl + '</b>',
