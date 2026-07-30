@@ -1486,21 +1486,74 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
 
     # ---- report_only: вернуть результаты без построения HTML ----
     if report_only:
+        _periods = ['VO2', 'VCO2', 'RER', 'VE', 'VE/VO2', 'VE/VCO2', 'RR', 'O2pulse']
+        _arrs = {p: df[p + '_ga'].loc[2:].to_numpy(dtype=float) for p in _periods}
+        _pctv = df['pctVO2max'].loc[2:].to_numpy(dtype=float)
+
+        def _detail_at(t):
+            """Значения всех кривых в момент t (как в подсказке на графике)."""
+            if t is None:
+                return None
+            i = int(np.argmin(np.abs(times_sec - t)))
+            d = {'t': float(t), 'pct': float(_pctv[i]) if i < len(_pctv) else None}
+            for p in _periods:
+                a = _arrs.get(p)
+                d[p] = float(a[i]) if (a is not None and i < len(a) and np.isfinite(a[i])) else None
+            return d
+
         def _pct_at(t):
             try:
-                i = int(np.argmin(np.abs(times_sec - t)))
-                return float(df['pctVO2max'].loc[2:].to_numpy()[i])
+                return float(_pctv[int(np.argmin(np.abs(times_sec - t)))])
             except Exception:
                 return float('nan')
         res = {'name': name, 'offset_s': offset_ms / 1000.0, 'hr_corr': hr_corr,
                'rec_start': rec_start, 'load_start': load_start,
                'recovery_min': recovery_minutes, 't_end': t_end}
+        detail = {}
         for num in (1, 2, 3, 4):
             p = points.get(num)
             if p:
                 res[f't{num}'] = float(p[0]); res[f'pct{num}'] = _pct_at(p[0])
+                detail[f'т{num}'] = _detail_at(p[0])
             else:
                 res[f't{num}'] = None; res[f'pct{num}'] = None
+                detail[f'т{num}'] = None
+        # --- точки/маркеры ВОССТАНОВЛЕНИЯ ---
+        try:
+            _hg = pd.Series(df['ЧСС'].loc[2:].astype(float)) if 'ЧСС' in df.columns else None
+            if _hg is not None:
+                _hg[_hg <= 0] = np.nan
+                _hgs = smooth_curve(_hg.interpolate(limit_direction='both').values, sigma=4)
+                _ir = int(np.argmin(np.abs(times_sec - rec_start)))
+                hrpk = float(np.nanmax(_hgs[max(0, _ir - 5):_ir + 3]))
+                res['hr_peak'] = hrpk
+                for lbl, dt in (('восст_1мин', 60.0), ('восст_2мин', 120.0)):
+                    tt = rec_start + dt
+                    if tt <= t_end:
+                        dd = _detail_at(tt); dd['ЧСС'] = float(_hgs[int(np.argmin(np.abs(times_sec - tt)))])
+                        dd['HRR'] = hrpk - dd['ЧСС']; detail[lbl] = dd
+                # выход <100 и замедление
+                _rm = np.where(times_sec >= rec_start)[0]
+                for i in _rm:
+                    if _hgs[i] < 100:
+                        detail['восст_ЧСС<100'] = _detail_at(float(times_sec[i])); break
+                _tr = times_sec[_rm]; _hr = _hgs[_rm]
+                if len(_tr) > 10:
+                    _sl = np.gradient(_hr, _tr); _fast = (_tr - rec_start) <= 150
+                    _smin = float(np.nanmin(_sl[_fast])) if _fast.any() else float(np.nanmin(_sl))
+                    if _smin < 0:
+                        for k in range(len(_tr)):
+                            if (_tr[k] - rec_start) >= 60 and _sl[k] > 0.30 * _smin:
+                                detail['восст_замедление'] = _detail_at(float(_tr[k])); break
+            # max RER на восстановлении
+            _rr = df['RER_ga'].loc[2:].to_numpy(dtype=float)
+            _rmask = (times_sec > rec_start) & np.isfinite(_rr)
+            if _rmask.sum() >= 3:
+                _idx = np.where(_rmask)[0]
+                detail['восст_max_RER'] = _detail_at(float(times_sec[_idx[int(np.argmax(_rr[_idx]))]]))
+        except Exception:
+            pass
+        res['detail'] = detail
         return res
 
     # ================================================================ #
