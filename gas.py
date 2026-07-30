@@ -1209,6 +1209,10 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
                 for k in idxl:                       # первый выход ЧСС на предсказанный уровень
                     if hr_s[k] >= ph:
                         tp = float(t[k]); break
+                if tp is None and len(idxl):
+                    # прогноз ЧСС выше реального максимума (частый случай для т4)
+                    # -> ставим точку на пик пульса = надир RR (у конца нагрузки)
+                    tp = float(t[idxl[int(np.argmax(hr_s[idxl]))]])
                 if tp is None:
                     continue
                 for i in (1, 2):
