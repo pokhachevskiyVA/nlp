@@ -730,14 +730,26 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
     #     ГОРИЗОНТАЛЬ, а потом растёт (как у Цыпулина) — берём КОНЕЦ горизонтали
     #     (начало подъёма), т.е. точка сдвигается правее минимума. Реализуем
     #     через rise_onset (последняя «донная» точка перед устойчивым ростом).
+    #     Технически: находим минимум RER, затем КОНЕЦ его «плоского дна» —
+    #     последнюю точку, где RER ещё в пределах +0.006 от минимума; дальше
+    #     начинается устойчивый подъём. Для V-образного RER это сам минимум,
+    #     для «горизонталь→подъём» (как у Цыпулина) — конец горизонтали.
     t1 = None
     try:
         rer = C.get('RER')
         if rer is not None:
-            lo_t = te[0] + 0.03 * dur          # пропускаем шум в самом начале
-            hi_t = te[0] + 0.70 * dur          # после подъёма RER только растёт
-            i1 = rise_onset(np.asarray(rer, dtype=float), lo_t, hi_t)
-            if i1 is not None:
+            ra = np.asarray(rer, dtype=float)
+            lo_i = int(len(te) * 0.03)          # пропускаем шум в самом начале
+            hi_i = int(len(te) * 0.70)          # после подъёма RER только растёт
+            idx = np.arange(lo_i, max(lo_i + 3, hi_i))
+            idx = idx[idx < len(te)]
+            if len(idx) >= 3:
+                imin = int(idx[int(np.argmin(ra[idx]))])
+                vmin = float(ra[imin])
+                i1 = imin
+                for i in idx:                    # последняя точка «дна» (RER≤min+0.006)
+                    if i >= imin and ra[i] <= vmin + 0.006:
+                        i1 = int(i)
                 t1 = float(te[i1])
                 res[1] = (t1, val_at('RER', t1),
                           'Лактатный порог (начало подъёма RER)')
