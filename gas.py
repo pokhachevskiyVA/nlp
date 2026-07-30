@@ -722,29 +722,25 @@ def detect_points(df, times, rec_start, return_details=False, load_start=0.0,
             cand = int(idx[int(np.argmin(yy))])
         return cand
 
-    # --- Точка 1 (лактатный порог) — ПЕРВЫЙ ИЗГИБ RER (вывод эксперта): ---
-    #     на графике RER хорошо виден первый изгиб — RER снижается в начале
-    #     (аэробный обмен, окисление жиров), затем на лактатном пороге
-    #     разворачивается вверх (буферизация лактата бикарбонатом даёт лишний
-    #     CO2). Момент разворота = МИНИМУМ RER = первый изгиб. Это надёжнее и
-    #     однозначнее консенсуса изломов (не цепляет старт нагрузки и не
-    #     промахивается). RER = VCO2/VO2.
+    # --- Точка 1 (лактатный порог) — НАЧАЛО ПОДЪЁМА RER (вывод эксперта): ---
+    #     RER снижается в начале (аэробный обмен, жиры), затем на лактатном
+    #     пороге разворачивается вверх (буферизация лактата даёт лишний CO2).
+    #     Точка 1 = момент, С КОТОРОГО RER НАЧИНАЕТ ПОДНИМАТЬСЯ. Если после спада
+    #     сразу подъём (V-образно) — это минимум; если RER сперва выходит на
+    #     ГОРИЗОНТАЛЬ, а потом растёт (как у Цыпулина) — берём КОНЕЦ горизонтали
+    #     (начало подъёма), т.е. точка сдвигается правее минимума. Реализуем
+    #     через rise_onset (последняя «донная» точка перед устойчивым ростом).
     t1 = None
     try:
         rer = C.get('RER')
         if rer is not None:
-            rr_a = np.asarray(rer, dtype=float)
-            # ищем минимум RER до ~70% преднагрузочного окна (после минимума RER
-            # только растёт). Пропускаем первые ~3% — шум в самом начале записи.
-            skip = int(len(te) * 0.03)
-            hi_i = int(len(te) * 0.70)
-            idx = np.arange(skip, max(skip + 3, hi_i))
-            idx = idx[idx < len(te)]
-            if len(idx) >= 3:
-                i1 = int(idx[int(np.argmin(rr_a[idx]))])
+            lo_t = te[0] + 0.03 * dur          # пропускаем шум в самом начале
+            hi_t = te[0] + 0.70 * dur          # после подъёма RER только растёт
+            i1 = rise_onset(np.asarray(rer, dtype=float), lo_t, hi_t)
+            if i1 is not None:
                 t1 = float(te[i1])
                 res[1] = (t1, val_at('RER', t1),
-                          'Лактатный порог (первый изгиб RER = минимум RER)')
+                          'Лактатный порог (начало подъёма RER)')
     except Exception:
         pass
     if res[1] is None:
@@ -1680,6 +1676,29 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                         font=dict(color='#17becf', size=9),
                         xanchor='left', yanchor='bottom', xshift=2)
                     break
+            # ТОЧКА ЗАМЕДЛЕНИЯ ВОССТАНОВЛЕНИЯ (перегиб «колено»): спад ЧСС из
+            # быстрой фазы (вагусная реактивация) переходит в медленную, обычно
+            # после ~2-й минуты — восстанавливается вариабельность. Ищем первый
+            # момент (после 1-й минуты), где скорость спада ЧСС упала ниже 30%
+            # от максимальной (быстрой фазы).
+            _rmask = times_sec >= rec_start
+            _tr = times_sec[_rmask]
+            _hr = _hgs[_rmask]
+            if len(_tr) > 10:
+                _sl = np.gradient(_hr, _tr)
+                _fast = (_tr - rec_start) <= 150
+                _smin = float(np.nanmin(_sl[_fast])) if _fast.any() else float(np.nanmin(_sl))
+                if _smin < 0:
+                    for k in range(len(_tr)):
+                        if (_tr[k] - rec_start) >= 60 and _sl[k] > 0.30 * _smin:
+                            tsl = float(_tr[k])
+                            add_vline_all(tsl, '#ff7f0e', dash='dot', width=1.4)
+                            fig.add_annotation(
+                                x=tsl, xref='x', yref='y domain', y=0.42,
+                                text='замедл. восст.', showarrow=False,
+                                font=dict(color='#ff7f0e', size=9),
+                                xanchor='left', yanchor='bottom', xshift=2)
+                            break
     except Exception:
         pass
 
