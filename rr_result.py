@@ -18,29 +18,39 @@ import re
 from openpyxl.drawing.image import Image
 from scipy.ndimage import gaussian_filter1d
 from openpyxl import load_workbook
-from google.colab import files
+try:
+    from google.colab import files          # только в Colab
+except Exception:
+    files = None
 
 warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 
-def make(conut_rest_mins, duration_of_start, duration_of_predstart):
-    def find_last_name(ext: str) -> str:
-      # Путь к папке с файлами (по умолчанию /content в Colab)
-      directory = "."
 
-      # Найти все файлы с расширением .rr
-      rr_files = [f for f in os.listdir(directory) if f.endswith(ext)]
+def make(rr_path=None, gas_path=None, conut_rest_mins=None,
+         duration_of_start=30000, duration_of_predstart=30000,
+         directory='.', out_dir='.'):
+    """Обработка RR: разбивка на предстарт/старт/минуты нагрузки/минуты
+    восстановления, линейные модели (наклон/отрезок), NN/|NN|, pNN%, графики,
+    результат в Excel (прежний формат).
 
-      if rr_files:
-          # Найти последний загруженный файл по времени изменения
-          latest_file = max(rr_files, key=lambda f: os.path.getmtime(os.path.join(directory, f)))
-          EXCEL_REPORT_PATH = os.path.join(directory, latest_file)
+    Границу НАГРУЗКА/ВОССТАНОВЛЕНИЕ определяем ПО ПУЛЬСУ (кросс-корреляция ЧСС
+    из газа и ЧСС=60000/RR — как в gas.py), если передан ГАЗОВЫЙ файл. Если газа
+    нет, число минут восстановления берём из conut_rest_mins или спрашиваем с
+    клавиатуры (прежний режим).
 
-          print(f"Последний файл: {EXCEL_REPORT_PATH}")
-      else:
-          print(f"Файлы с расширением {ext} не найдены.")
-      return EXCEL_REPORT_PATH
+    Параметры длительностей — в МИЛЛИСЕКУНДАХ (t30=30000).
+    """
+    def find_last_name(ext):
+        fs = [f for f in os.listdir(directory) if f.endswith(ext)]
+        if not fs:
+            raise FileNotFoundError(f"Файлы с расширением {ext} не найдены в {directory}")
+        latest = max(fs, key=lambda f: os.path.getmtime(os.path.join(directory, f)))
+        return os.path.join(directory, latest)
 
-    EXCEL_REPORT_PATH = find_last_name("rr")
+    if rr_path is None:
+        rr_path = find_last_name('.rr')
+    EXCEL_REPORT_PATH = rr_path
+    print(f"RR-файл: {EXCEL_REPORT_PATH}")
 
     df = pd.read_csv(EXCEL_REPORT_PATH)
     df.columns = ['Unnamed: 0']
@@ -49,6 +59,41 @@ def make(conut_rest_mins, duration_of_start, duration_of_predstart):
     df_res['ОВР'] = df['Unnamed: 0'].dropna().reset_index(drop=True)
     df_res['ВРЕМЯ'] = df_res['ОВР'].cumsum()
     df_res = df_res.reset_index()
+
+    # ---- ЧИСЛО МИНУТ ВОССТАНОВЛЕНИЯ ----
+    if conut_rest_mins is None:
+        # 1) ОСНОВНОЙ способ — по ПУЛЬСУ (нужен газовый файл). Через gas.py
+        #    находим начало восстановления (пик ЧСС) и сдвиг RR↔газ.
+        if gas_path is None:
+            try:
+                gas_path = find_last_name('.xlsx')
+            except Exception:
+                gas_path = None
+        if gas_path is not None:
+            try:
+                import gas as _gas
+                _r = _gas.make(rr_path=rr_path, gas_path=gas_path, report_only=True,
+                               download=False,
+                               prestart_s=duration_of_predstart / 1000.0,
+                               start_s=duration_of_start / 1000.0)
+                rec_rr_s = _r['rec_start'] - _r['offset_s']        # начало восст. в шкале RR (с)
+                rr_end_s = float(df_res['ВРЕМЯ'].iloc[-1]) / 1000.0
+                conut_rest_mins = int(round((rr_end_s - rec_rr_s) / 60.0))
+                conut_rest_mins = max(1, conut_rest_mins)
+                print(f"Авто (по пульсу): восстановление {conut_rest_mins} мин "
+                      f"(начало восст. в RR ≈ {rec_rr_s:.0f} с, сдвиг {_r['offset_s']:+.0f} с)")
+            except Exception as _e:
+                print(f"Авто по пульсу не удалось ({_e}); спрошу с клавиатуры.")
+                conut_rest_mins = None
+        # 2) ЗАПАС — с клавиатуры (прежний режим), если газа нет
+        if conut_rest_mins is None:
+            try:
+                conut_rest_mins = int(round(float(
+                    input('Введите количество минут восстановления: ').strip().replace(',', '.'))))
+            except (ValueError, EOFError):
+                conut_rest_mins = 6
+
+    os.makedirs(os.path.join(out_dir, 'data'), exist_ok=True)
 
 
 
@@ -59,7 +104,7 @@ def make(conut_rest_mins, duration_of_start, duration_of_predstart):
     # else:
     #     full_name = EXCEL_REPORT_PATH.split('.')[1]
 
-    filename = 'data/' + EXCEL_REPORT_PATH + '_result_rr.xlsx'
+    filename = os.path.join(out_dir, os.path.basename(EXCEL_REPORT_PATH) + '_result_rr.xlsx')
 
     """# Разбиваем временной ряд на следюущие периоды:
     - предстарт, старт
@@ -230,7 +275,7 @@ def make(conut_rest_mins, duration_of_start, duration_of_predstart):
 
     with pd.ExcelWriter(filename, engine='openpyxl', mode='w') as writer:
       # Сохраняем график как изображение
-      img_path = f'./data/graph_{0}.png'
+      img_path = os.path.join(out_dir, 'data', 'graph_0.png')
       axs[0].figure.savefig(img_path)
 
       # Вставляем изображение в Excel
@@ -258,7 +303,7 @@ def make(conut_rest_mins, duration_of_start, duration_of_predstart):
 
     with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
       # Сохраняем график как изображение
-      img_path = f'./data/graph_{0}.png'
+      img_path = os.path.join(out_dir, 'data', 'graph_0.png')
       axs[0].figure.savefig(img_path)
 
       # Вставляем изображение в Excel
@@ -373,7 +418,7 @@ def make(conut_rest_mins, duration_of_start, duration_of_predstart):
 
     with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
       # Сохраняем график как изображение
-      img_path = f'./data/graph_{0}.png'
+      img_path = os.path.join(out_dir, 'data', 'graph_0.png')
       axs[0].figure.savefig(img_path)
 
       # Вставляем изображение в Excel
@@ -475,9 +520,13 @@ def make(conut_rest_mins, duration_of_start, duration_of_predstart):
     with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
         new_df.to_excel(writer, sheet_name=sheet_name, index=True)
 
-
-
-    files.download(filename)
+    print(f"Результат сохранён: {filename}")
+    if files is not None:                    # только в Colab
+        try:
+            files.download(filename)
+        except Exception:
+            pass
+    return filename
 
     """# Прогоянем алгоритм на всех данных"""
 
