@@ -28,7 +28,7 @@ warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 
 def make(rr_path=None, gas_path=None, conut_rest_mins=None,
          duration_of_start=30000, duration_of_predstart=30000,
-         directory='.', out_dir='.'):
+         directory='.', out_dir='.', make_graphs=True):
     """Обработка RR: разбивка на предстарт/старт/минуты нагрузки/минуты
     восстановления, линейные модели (наклон/отрезок), NN/|NN|, pNN%, графики,
     результат в Excel (прежний формат).
@@ -61,6 +61,7 @@ def make(rr_path=None, gas_path=None, conut_rest_mins=None,
     df_res = df_res.reset_index()
 
     # ---- ЧИСЛО МИНУТ ВОССТАНОВЛЕНИЯ ----
+    rec_start_ms = None    # точная граница восст. (мс) — если найдена по пульсу
     if conut_rest_mins is None:
         # 1) ОСНОВНОЙ способ — по ПУЛЬСУ (нужен газовый файл). Через gas.py
         #    находим начало восстановления (пик ЧСС) и сдвиг RR↔газ.
@@ -78,10 +79,12 @@ def make(rr_path=None, gas_path=None, conut_rest_mins=None,
                                start_s=duration_of_start / 1000.0)
                 rec_rr_s = _r['rec_start'] - _r['offset_s']        # начало восст. в шкале RR (с)
                 rr_end_s = float(df_res['ВРЕМЯ'].iloc[-1]) / 1000.0
-                conut_rest_mins = int(round((rr_end_s - rec_rr_s) / 60.0))
-                conut_rest_mins = max(1, conut_rest_mins)
-                print(f"Авто (по пульсу): восстановление {conut_rest_mins} мин "
-                      f"(начало восст. в RR ≈ {rec_rr_s:.0f} с, сдвиг {_r['offset_s']:+.0f} с)")
+                # граница ставится ТОЧНО на пульсовую точку (не «целые минуты от
+                # конца») — минуты восстановления считаются вперёд от неё
+                rec_start_ms = rec_rr_s * 1000.0
+                conut_rest_mins = max(1, int(round((rr_end_s - rec_rr_s) / 60.0)))
+                print(f"Авто (по пульсу): начало восстановления {rec_rr_s:.0f} с "
+                      f"(сдвиг {_r['offset_s']:+.0f} с), минут восст. {conut_rest_mins}")
             except Exception as _e:
                 print(f"Авто по пульсу не удалось ({_e}); спрошу с клавиатуры.")
                 conut_rest_mins = None
@@ -124,13 +127,17 @@ def make(rr_path=None, gas_path=None, conut_rest_mins=None,
 
     t30 = 30000
     t60 = t30 * 2
-    t_start_of_rest = t60 * conut_rest_mins
 
     list_v = []
 
-    # Определение последней временной метки и начальной временной метки
-    duration_time = df_res['ВРЕМЯ'].iloc[-1]  # Последняя временная метка в данных (накопленного итога)
-    start_time_v = duration_time - t_start_of_rest
+    # Граница нагрузка/восстановление:
+    #  - если найдена по ПУЛЬСУ (rec_start_ms) — ставим ТОЧНО на неё;
+    #  - иначе (ручной ввод / RR-only) — «целые минуты от конца» (как раньше).
+    duration_time = df_res['ВРЕМЯ'].iloc[-1]  # последняя временная метка (мс)
+    if rec_start_ms is not None:
+        start_time_v = rec_start_ms
+    else:
+        start_time_v = duration_time - t60 * conut_rest_mins
 
     # Разбиение на минуты
     for i in range(conut_rest_mins):  # Для каждой минуты восстановления
@@ -258,60 +265,46 @@ def make(rr_path=None, gas_path=None, conut_rest_mins=None,
         ax.legend(title='Цвета кривых')
         ax.grid(True)
 
-    # Создаем фигуру и подграфики
-    count_graphs = len(list_periods)
-    fig, axs = plt.subplots(nrows=(count_graphs+1)//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
-    axs = axs.flatten()  # Преобразуем в одномерный массив для удобного доступа
+    if make_graphs:
+      # Создаем фигуру и подграфики
+      count_graphs = len(list_periods)
+      fig, axs = plt.subplots(nrows=(count_graphs+1)//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
+      axs = axs.flatten()  # Преобразуем в одномерный массив для удобного доступа
 
-    # Перебираем все периоды и строим графики
-    for i, period in enumerate(list_periods):
-        plot(df_res, period, axs[i])  # Передаем соответствующий подграфик
+      # Перебираем все периоды и строим графики
+      for i, period in enumerate(list_periods):
+          plot(df_res, period, axs[i])  # Передаем соответствующий подграфик
 
-    if count_graphs % 2 != 0:
-        fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
+      if count_graphs % 2 != 0:
+          fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
 
-    plt.tight_layout()
-    # plt.show()
+      plt.tight_layout()
 
-    with pd.ExcelWriter(filename, engine='openpyxl', mode='w') as writer:
-      # Сохраняем график как изображение
-      img_path = os.path.join(out_dir, 'data', 'graph_0.png')
-      axs[0].figure.savefig(img_path)
+      with pd.ExcelWriter(filename, engine='openpyxl', mode='w') as writer:
+        img_path = os.path.join(out_dir, 'data', 'graph_0.png')
+        axs[0].figure.savefig(img_path)
+        worksheet = writer.book.create_sheet(f'Модели по периодам')
+        img = Image(img_path)
+        worksheet.add_image(img, 'A1')
+      plt.close(fig)
 
-      # Вставляем изображение в Excel
-      worksheet = writer.book.create_sheet(f'Модели по периодам')
-      img = Image(img_path)
-      worksheet.add_image(img, 'A1')
-
-    plt.close(fig)
-
-    # Создаем фигуру и подграфики
-    count_graphs = len(list_periods)
-    fig, axs = plt.subplots(nrows=(count_graphs+1)//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
-    axs = axs.flatten()  # Преобразуем в одномерный массив для удобного доступа
-
-    # Перебираем все периоды и строим графики
-    for i, period in enumerate(list_periods):
-        period += '_|NN|'
-        plot(df_res, period, axs[i], postfix='М')  # Передаем соответствующий подграфик
-
-    if count_graphs % 2 != 0:
-        fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
-
-    plt.tight_layout()
-    # plt.show()
-
-    with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
-      # Сохраняем график как изображение
-      img_path = os.path.join(out_dir, 'data', 'graph_0.png')
-      axs[0].figure.savefig(img_path)
-
-      # Вставляем изображение в Excel
-      worksheet = writer.book.create_sheet(f'Модели по периодам (|NN|)')
-      img = Image(img_path)
-      worksheet.add_image(img, 'A1')
-
-    plt.close(fig)
+      # Создаем фигуру и подграфики (|NN|)
+      count_graphs = len(list_periods)
+      fig, axs = plt.subplots(nrows=(count_graphs+1)//2, ncols=2, figsize=(12, 20))
+      axs = axs.flatten()
+      for i, period in enumerate(list_periods):
+          period += '_|NN|'
+          plot(df_res, period, axs[i], postfix='М')
+      if count_graphs % 2 != 0:
+          fig.delaxes(axs[-1])
+      plt.tight_layout()
+      with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
+        img_path = os.path.join(out_dir, 'data', 'graph_0.png')
+        axs[0].figure.savefig(img_path)
+        worksheet = writer.book.create_sheet(f'Модели по периодам (|NN|)')
+        img = Image(img_path)
+        worksheet.add_image(img, 'A1')
+      plt.close(fig)
 
     """# Графики нативной и модельной кривых после удаления выбросов"""
 
@@ -411,32 +404,23 @@ def make(rr_path=None, gas_path=None, conut_rest_mins=None,
         ax.legend(title='Цвета кривых')
         ax.grid(True)
 
-    # Создаем фигуру и подграфики
-    count_graphs = len(list_periods)
-    fig, axs = plt.subplots(nrows=(count_graphs+1)//2, ncols=2, figsize=(12, 20))  # 5 строк и 2 столбца
-    axs = axs.flatten()  # Преобразуем в одномерный массив для удобного доступа
-
-    # Перебираем все периоды и строим графики
-    for i, period in enumerate(list_periods):
-        plot2(df_res, period, axs[i], postfix='ММ')  # Передаем соответствующий подграфик
-
-    if count_graphs % 2 != 0:
-        fig.delaxes(axs[-1])  # Удаляем последний пустой подграфик
-
-    plt.tight_layout()
-    # plt.show()
-
-    with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
-      # Сохраняем график как изображение
-      img_path = os.path.join(out_dir, 'data', 'graph_0.png')
-      axs[0].figure.savefig(img_path)
-
-      # Вставляем изображение в Excel
-      worksheet = writer.book.create_sheet(f'Модели по периодам (ga)')
-      img = Image(img_path)
-      worksheet.add_image(img, 'A1')
-
-    plt.close(fig)
+    if make_graphs:
+      # Создаем фигуру и подграфики (ga)
+      count_graphs = len(list_periods)
+      fig, axs = plt.subplots(nrows=(count_graphs+1)//2, ncols=2, figsize=(12, 20))
+      axs = axs.flatten()
+      for i, period in enumerate(list_periods):
+          plot2(df_res, period, axs[i], postfix='ММ')
+      if count_graphs % 2 != 0:
+          fig.delaxes(axs[-1])
+      plt.tight_layout()
+      with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
+        img_path = os.path.join(out_dir, 'data', 'graph_0.png')
+        axs[0].figure.savefig(img_path)
+        worksheet = writer.book.create_sheet(f'Модели по периодам (ga)')
+        img = Image(img_path)
+        worksheet.add_image(img, 'A1')
+      plt.close(fig)
 
     """# pNN, %"""
 
@@ -524,10 +508,10 @@ def make(rr_path=None, gas_path=None, conut_rest_mins=None,
     # Создаем новый DataFrame из списка
     new_df = pd.DataFrame(new_rows)
 
-    book = load_workbook(filename)
     sheet_name = 'Статистика'
-
-    with pd.ExcelWriter(filename, engine='openpyxl', mode='a') as writer:
+    # с графиками файл уже создан ими -> дозаписываем; без графиков -> создаём
+    _mode = 'a' if make_graphs else 'w'
+    with pd.ExcelWriter(filename, engine='openpyxl', mode=_mode) as writer:
         new_df.to_excel(writer, sheet_name=sheet_name, index=True)
 
     print(f"Результат сохранён: {filename}")
