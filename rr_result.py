@@ -141,12 +141,13 @@ def make(rr_path=None, gas_path=None, conut_rest_mins=None,
 
     # Разбиение на минуты
     for i in range(conut_rest_mins):  # Для каждой минуты восстановления
-
-        list_v.append(f"{i+1}В")
         minute_start = start_time_v + i * t60
         minute_end = start_time_v + (i + 1) * t60
 
         temp = df_res.loc[(df_res['ВРЕМЯ'] >= minute_start) & (df_res['ВРЕМЯ'] < minute_end), 'ОВР']
+        if len(temp) < 2:            # пустая/слишком короткая минута — пропускаем
+            continue
+        list_v.append(f"{i+1}В")
         df_res[f"{i+1}В"] = temp
         arr_periods[temp.index[0]] = f"{i+1}В"
 
@@ -169,21 +170,17 @@ def make(rr_path=None, gas_path=None, conut_rest_mins=None,
     for i in range(10):  # Для каждой минуты в диапазоне
         minute_start = start_time + i * t60
         minute_end = minute_start + t60
-
-        list_n.append(f"{i+1}Н")
-
-        if minute_end >= end_time:
-          minute_end = end_time
-
-          temp = df_res.loc[(df_res['ВРЕМЯ'] >= minute_start) & (df_res['ВРЕМЯ'] < minute_end), 'ОВР']
-          df_res[f"{i+1}Н"] = temp
-          arr_periods[temp.index[0]] = f"{i+1}Н"
-          break
-
+        last = minute_end >= end_time
+        if last:
+            minute_end = end_time
 
         temp = df_res.loc[(df_res['ВРЕМЯ'] >= minute_start) & (df_res['ВРЕМЯ'] < minute_end), 'ОВР']
-        df_res[f"{i+1}Н"] = temp
-        arr_periods[temp.index[0]] = f"{i+1}Н"
+        if len(temp) >= 2:            # непустая минута нагрузки (≥2 точек)
+            list_n.append(f"{i+1}Н")
+            df_res[f"{i+1}Н"] = temp
+            arr_periods[temp.index[0]] = f"{i+1}Н"
+        if last:
+            break
 
     df_res["ПЕРИОДЫ"] = arr_periods
 
@@ -194,6 +191,8 @@ def make(rr_path=None, gas_path=None, conut_rest_mins=None,
     list_periods = [period for period in arr_periods if len(period) > 1]
     for period in list_periods:
         y = df_res[period].dropna()
+        if len(y) < 2:                      # слишком короткий сегмент — пропуск
+            continue
         X = df_res[['index']].loc[:len(y)-1]
 
         model = LinearRegression()
@@ -226,6 +225,8 @@ def make(rr_path=None, gas_path=None, conut_rest_mins=None,
     for period in list_periods:
         period = period + "_|NN|"
         y = df_res[period].dropna()
+        if len(y) < 2:
+            continue
         X = df_res[['index']].loc[:len(y)-1]
 
         model = LinearRegression()
@@ -367,6 +368,8 @@ def make(rr_path=None, gas_path=None, conut_rest_mins=None,
     for period in list_periods:
 
         series = df_res[period].copy().dropna()
+        if len(series) < 2:
+            continue
 
         arr = _smooth(series.astype(float).values)
 
