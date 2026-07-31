@@ -359,13 +359,23 @@ def make(rr_path=None, gas_path=None, conut_rest_mins=None,
         """
         return gaussian_filter1d(data, sigma=sigma, mode='nearest')
 
+    # Сглаживание — ЕДИНООБРАЗНО с газом: фильтр Хампеля (удаление выбросов по
+    # локальной медиане ± k·MAD) + гаусс (σ=5). Прежний метод (замена выбросов
+    # ±1σ + гаусс) искажал форму на пачках артефактов; здесь используем ту же
+    # smooth_curve, что и в gas.py.
+    try:
+        import gas as _gas
+        _smooth = lambda s: _gas.smooth_curve(np.asarray(s, dtype=float), sigma=5)
+    except Exception:
+        _smooth = lambda s: gaussian_smoothing(
+            replace_outliers_with_neighbors(pd.Series(np.asarray(s, dtype=float))), sigma=5)
+
     list_periods = [period for period in arr_periods if len(period) > 1]
     for period in list_periods:
 
         series = df_res[period].copy().dropna()
 
-        data = replace_outliers_with_neighbors(series.astype(float))
-        arr = gaussian_smoothing(data, sigma=5)
+        arr = _smooth(series.astype(float).values)
 
         y = arr
 
