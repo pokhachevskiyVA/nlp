@@ -10,7 +10,7 @@
 Значимые_признаки.xlsx, свод по виду спорта. Плеяды рисуются классическим
 draw() из analyze.py — трогать нельзя.
 """
-import os, sys, json, argparse, pickle, warnings
+import os, re, sys, json, argparse, pickle, warnings
 import numpy as np, pandas as pd
 warnings.filterwarnings('ignore')
 C = '/Users/mac-os/Documents/Батя/outputs/_cache'
@@ -137,10 +137,14 @@ TARGETS = {
 LEAK = ('таргет_', 'Пик нагрузки', 'пик нагрузки', 'Wmax', 'PWC', 'мин_нагрузки',
         'Ннак_N4', 'Ннак_N5', 'NewVar', 'Результативность',
         'КИ_за_нагрузку', 'КИ_всего_до_восст', 'КИ_сумма_мс', 'КИ_за_разгон',
-        # Моменты, заданные порогом ЧСС: там ЧСС по построению равна порогу
-        # (разброс 1,3-1,5 уд/мин), а HRR = ЧСС_пик - порог, то есть повторяет
-        # пиковую ЧСС на r = 0,997. Оба признака бессодержательны.
-        'ЧСС<100_ЧСС', 'ЧСС<100_HRR', 'ЧСС<125_ЧСС', 'ЧСС<125_HRR')
+        )
+
+# Моменты, заданные порогом ЧСС: там ЧСС по построению равна порогу (разброс
+# 1,3-1,5 уд/мин), а HRR = ЧСС_пик - порог, то есть повторяет пиковую ЧСС
+# на r = 0,997. Оба признака бессодержательны при ЛЮБОМ пороге и при любом
+# суффиксе имени (встречались варианты `ЧСС<100_нов_HRR`), поэтому ловим
+# регулярным выражением, а не перечислением.
+LEAK_RE = re.compile(r'восст_ЧСС<\d+.*_(ЧСС|HRR)$')
 
 # Дополнительные исключения под конкретную цель: то, из чего цель построена.
 EXTRA_LEAK = {
@@ -156,7 +160,7 @@ def pick_features(d, kind, target_key=None):
     cols = []
     for c in d.columns:
         s = str(c)
-        if any(k in s for k in LEAK) or any(k in s for k in extra):
+        if any(k in s for k in LEAK) or any(k in s for k in extra) or LEAK_RE.search(s):
             continue
         if s.startswith('газ_') and s.endswith('_t'):
             continue                      # абсолютное время = длительность теста
