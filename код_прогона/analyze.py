@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Анализ группы: значимые признаки, классические плеяды (стиль программы Даниила)."""
+"""Анализ группы: значимые признаки, классические плеяды (классический стиль проекта)."""
 import os,sys,math,re,warnings; warnings.filterwarnings('ignore')
 import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
 import numpy as np, pandas as pd
