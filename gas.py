@@ -1273,7 +1273,8 @@ def make_rr(rr_path=None, recovery_minutes=None, directory='.', out_dir='.',
 def make(rr_path=None, gas_path=None, recovery_minutes=None,
          directory='.', out_dir='.', download=True, auto_detect=True,
          show_candidates=False, recovery_auto=True, align_by_recovery=True,
-         prestart_s=None, start_s=None, rcp_mode='article', report_only=False):
+         prestart_s=None, start_s=None, rcp_mode='article', report_only=False,
+         hr_thresholds=(100, 125), doo_s=180.0):
     """Строит HTML с графиками газового анализа.
 
     report_only=True — не строить HTML (долго), только посчитать синхронизацию,
@@ -1653,11 +1654,19 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
                     if tt <= t_end:
                         dd = _detail_at(tt); dd['ЧСС'] = float(_hgs[int(np.argmin(np.abs(times_sec - tt)))])
                         dd['HRR'] = hrpk - dd['ЧСС']; detail[lbl] = dd
-                # выход <100 и замедление
+                # выход ниже порога ЧСС и замедление.
+                # Пороги задаются параметром hr_thresholds; 100 оставлен для
+                # сверки со старыми прогонами, 125 — рабочий (достижим у 96%
+                # лыжников и 87% баскетболистов, тогда как 100 — у 21% и 9%).
                 _rm = np.where(times_sec >= rec_start)[0]
-                for i in _rm:
-                    if _hgs[i] < 100:
-                        detail['восст_ЧСС<100'] = _detail_at(float(times_sec[i])); break
+                for _thr in hr_thresholds:
+                    for i in _rm:
+                        if _hgs[i] < _thr:
+                            _d = _detail_at(float(times_sec[i]))
+                            _d['ЧСС'] = float(_hgs[i])
+                            _d['HRR'] = hrpk - _d['ЧСС']
+                            detail[f'восст_ЧСС<{_thr}'] = _d
+                            break
                 _tr = times_sec[_rm]; _hr = _hgs[_rm]
                 if len(_tr) > 10:
                     _sl = np.gradient(_hr, _tr); _fast = (_tr - rec_start) <= 150
@@ -1672,6 +1681,14 @@ def make(rr_path=None, gas_path=None, recovery_minutes=None,
             if _rmask.sum() >= 3:
                 _idx = np.where(_rmask)[0]
                 detail['восст_max_RER'] = _detail_at(float(times_sec[_idx[int(np.argmax(_rr[_idx]))]]))
+            # конец ДОО-фазы: load_start + doo_s. Нужен как честное начало
+            # разгона для кислородной цены прироста dVO2/dWR.
+            _tk = load_start + float(doo_s)
+            if _tk <= rec_start:
+                _d = _detail_at(_tk)
+                if _hg is not None:
+                    _d['ЧСС'] = float(_hgs[int(np.argmin(np.abs(times_sec - _tk)))])
+                detail['коноо'] = _d
         except Exception:
             pass
         res['detail'] = detail
